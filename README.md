@@ -15,8 +15,8 @@ A Rust implementation of the ActivityWatch notification service. This is a port 
 
 ### Prerequisites
 
-- Rust 1.70 or later
 - ActivityWatch server running
+- For building from source: Rust 1.70 or later
 
 ### Build from source
 
