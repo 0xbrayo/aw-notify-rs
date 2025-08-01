@@ -30,91 +30,85 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-linux:
+  build-linux-x64:
     needs: create-release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target:
-          [
-            {
-              arch: "x86_64-unknown-linux-gnu",
-              name: "linux-x64",
-              display: "Linux (x86_64)",
-            },
-            {
-              arch: "aarch64-unknown-linux-gnu",
-              name: "linux-arm64",
-              display: "Linux (ARM64)",
-            },
-          ]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target.arch }}
           override: true
 
-      - name: Install system dependencies (x86_64)
-        if: matrix.target.arch == 'x86_64-unknown-linux-gnu'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
 
-      - name: Install system dependencies (ARM64)
-        if: matrix.target.arch == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev gcc-aarch64-linux-gnu
-
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target.arch }}
+          cargo build --release
 
       - name: Package
         run: |
-          cd target/${{ matrix.target.arch }}/release
-          tar -czf ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz ${{ env.PROJECT_NAME }}
+          cd target/release
+          tar -czf ${{ env.PROJECT_NAME }}-linux-x64.tar.gz ${{ env.PROJECT_NAME }}
           cd -
 
       - name: Upload Release Asset
         run: |
-          gh release upload ${{ github.ref_name }} ./target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz
+          gh release upload ${{ github.ref_name }} ./target/release/${{ env.PROJECT_NAME }}-linux-x64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-macos:
+  build-linux-arm64:
     needs: create-release
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target:
-          [
-            {
-              arch: "x86_64-apple-darwin",
-              name: "macos-x64",
-              display: "macOS (Intel)",
-            },
-            {
-              arch: "aarch64-apple-darwin",
-              name: "macos-arm64",
-              display: "macOS (Apple Silicon)",
-            },
-          ]
+    runs-on: ubuntu-latest-arm64
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target.arch }}
+          override: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
+
+      - name: Build
+        run: |
+          cargo build --release
+
+      - name: Package
+        run: |
+          cd target/release
+          tar -czf ${{ env.PROJECT_NAME }}-linux-arm64.tar.gz ${{ env.PROJECT_NAME }}
+          cd -
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./target/release/${{ env.PROJECT_NAME }}-linux-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos-x64:
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-apple-darwin
           override: true
 
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target.arch }}
+          cargo build --release --target x86_64-apple-darwin
 
       - name: Create Application Bundle
         run: |
@@ -150,60 +144,119 @@ jobs:
           </dict>
           </plist>' > ${{ env.PROJECT_NAME }}.app/Contents/Info.plist
 
-          cp target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }} ${{ env.PROJECT_NAME }}.app/Contents/MacOS/
+          cp target/x86_64-apple-darwin/release/${{ env.PROJECT_NAME }} ${{ env.PROJECT_NAME }}.app/Contents/MacOS/
 
           # Create DMG
-          hdiutil create -volname "${{ env.PROJECT_NAME }}" -srcfolder ${{ env.PROJECT_NAME }}.app -ov -format UDZO ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.dmg
+          hdiutil create -volname "${{ env.PROJECT_NAME }}" -srcfolder ${{ env.PROJECT_NAME }}.app -ov -format UDZO ${{ env.PROJECT_NAME }}-macos-x64.dmg
 
           # Create tar.gz as well
-          tar -czf ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz ${{ env.PROJECT_NAME }}.app
+          tar -czf ${{ env.PROJECT_NAME }}-macos-x64.tar.gz ${{ env.PROJECT_NAME }}.app
 
       - name: Upload DMG Release Asset
         run: |
-          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.dmg
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-macos-x64.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload App Release Asset
         run: |
-          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-macos-x64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-windows:
+  build-macos-arm64:
     needs: create-release
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        target:
-          [
-            {
-              arch: "x86_64-pc-windows-msvc",
-              name: "windows",
-              display: "Windows (x64)",
-            },
-          ]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target.arch }}
+          target: aarch64-apple-darwin
           override: true
 
       - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target.arch }}
+          cargo build --release --target aarch64-apple-darwin
+
+      - name: Create Application Bundle
+        run: |
+          mkdir -p ${{ env.PROJECT_NAME }}.app/Contents/MacOS
+          mkdir -p ${{ env.PROJECT_NAME }}.app/Contents/Resources
+
+          echo '<?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleIdentifier</key>
+            <string>net.activitywatch.'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleName</key>
+            <string>'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>LSUIElement</key>
+            <true/>
+          </dict>
+          </plist>' > ${{ env.PROJECT_NAME }}.app/Contents/Info.plist
+
+          cp target/aarch64-apple-darwin/release/${{ env.PROJECT_NAME }} ${{ env.PROJECT_NAME }}.app/Contents/MacOS/
+
+          # Create DMG
+          hdiutil create -volname "${{ env.PROJECT_NAME }}" -srcfolder ${{ env.PROJECT_NAME }}.app -ov -format UDZO ${{ env.PROJECT_NAME }}-macos-arm64.dmg
+
+          # Create tar.gz as well
+          tar -czf ${{ env.PROJECT_NAME }}-macos-arm64.tar.gz ${{ env.PROJECT_NAME }}.app
+
+      - name: Upload DMG Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-macos-arm64.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload App Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-macos-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Build
+        run: |
+          cargo build --release
 
       - name: Package
         run: |
-          cd target/${{ matrix.target.arch }}/release
-          7z a -tzip ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.zip ${{ env.PROJECT_NAME }}.exe
+          cd target/release
+          7z a -tzip ${{ env.PROJECT_NAME }}-windows.zip ${{ env.PROJECT_NAME }}.exe
           cd -
 
       - name: Upload Release Asset
         run: |
-          gh release upload ${{ github.ref_name }} ./target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.zip
+          gh release upload ${{ github.ref_name }} ./target/release/${{ env.PROJECT_NAME }}-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
