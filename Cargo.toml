@@ -1,0 +1,24 @@
+[package]
+name = "aw-notify-rs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aw-notify"
+path = "src/main.rs"
+
+[dependencies]
+aw-client-rust = { git = "https://github.com/0xbrayo/aw-server-rust.git", branch = "canonical-queries" }
+aw-models = { git = "https://github.com/ActivityWatch/aw-server-rust.git", branch = "master" }
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.10"
+notify-rust = "4.10"
+anyhow = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+dashmap = "5.5"
+hostname = "0.3"
