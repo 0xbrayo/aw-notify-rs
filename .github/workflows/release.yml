@@ -1,0 +1,192 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  PROJECT_NAME: aw-notify
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.get_upload_url.outputs.url }}
+    steps:
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*
+
+      - name: Get Upload URL
+        id: get_upload_url
+        run: |
+          echo "url=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.upload_url')" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          [
+            {
+              arch: "x86_64-unknown-linux-gnu",
+              name: "linux",
+              display: "Linux (x86_64)",
+            },
+          ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.arch }}
+          override: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target.arch }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target.arch }}/release
+          tar -czf ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz ${{ env.PROJECT_NAME }}
+          cd -
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          [
+            {
+              arch: "x86_64-apple-darwin",
+              name: "macos",
+              display: "macOS (Intel)",
+            },
+          ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.arch }}
+          override: true
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target.arch }}
+
+      - name: Create Application Bundle
+        run: |
+          mkdir -p ${{ env.PROJECT_NAME }}.app/Contents/MacOS
+          mkdir -p ${{ env.PROJECT_NAME }}.app/Contents/Resources
+
+          echo '<?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleIdentifier</key>
+            <string>net.activitywatch.'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleName</key>
+            <string>'${{ env.PROJECT_NAME }}'</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.13</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>LSUIElement</key>
+            <true/>
+          </dict>
+          </plist>' > ${{ env.PROJECT_NAME }}.app/Contents/Info.plist
+
+          cp target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }} ${{ env.PROJECT_NAME }}.app/Contents/MacOS/
+
+          # Create DMG
+          hdiutil create -volname "${{ env.PROJECT_NAME }}" -srcfolder ${{ env.PROJECT_NAME }}.app -ov -format UDZO ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.dmg
+
+          # Create tar.gz as well
+          tar -czf ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz ${{ env.PROJECT_NAME }}.app
+
+      - name: Upload DMG Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload App Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          [
+            {
+              arch: "x86_64-pc-windows-msvc",
+              name: "windows",
+              display: "Windows (x64)",
+            },
+          ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target.arch }}
+          override: true
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target.arch }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target.arch }}/release
+          7z a -tzip ${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.zip ${{ env.PROJECT_NAME }}.exe
+          cd -
+
+      - name: Upload Release Asset
+        run: |
+          gh release upload ${{ github.ref_name }} ./target/${{ matrix.target.arch }}/release/${{ env.PROJECT_NAME }}-${{ matrix.target.name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
