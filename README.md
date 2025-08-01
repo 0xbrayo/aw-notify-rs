@@ -134,7 +134,7 @@ On macOS, you may need to grant notification permissions to your terminal or the
 
 If the service can't connect to ActivityWatch:
 
-1. Ensure ActivityWatch server is running (`aw-qt` or `aw-server`)
+1. Ensure ActivityWatch server is running (`aw-tauri` or `aw-server`)
 2. Check the correct port (default: 5600, testing: 5666)
 3. Verify the server is accessible at `http://localhost:5600`
 
