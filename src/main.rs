@@ -10,6 +10,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
+use std::env;
+
+/// Scan each entry in PATH for `aw-tauri.exe` and return its full path if found.
+fn find_aw_tauri() -> Option<String> {
+    env::var_os("PATH").and_then(|paths| {
+        env::split_paths(&paths).find_map(|dir| {
+            let exe = dir.join("aw-tauri.exe");
+            if exe.is_file() {
+                Some(exe.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+    })
+}
 
 // Constants
 const TIME_OFFSET_HOURS: i64 = 4;
@@ -560,9 +575,25 @@ impl Clone for NotificationService {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn send_notification(title: &str, message: &str) {
     info!("Showing: \"{}\" - \"{}\"", title, message);
+    let aumid = find_aw_tauri().unwrap_or_else(|| "ActivityWatch".to_string());
+    match Notification::new()
+        .summary(title)
+        .body(message)
+        .app_id(&aumid)
+        .timeout(Timeout::Milliseconds(5000))
+        .show()
+    {
+        Ok(_) => debug!("Notification sent successfully"),
+        Err(e) => warn!("Failed to send notification: {}", e),
+    }
+}
 
+#[cfg(not(target_os = "windows"))]
+fn send_notification(title: &str, message: &str) {
+    info!("Showing: \"{}\" - \"{}\"", title, message);
     match Notification::new()
         .summary(title)
         .body(message)
