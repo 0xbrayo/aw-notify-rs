@@ -24,6 +24,7 @@ static AW_CLIENT: Lazy<Mutex<Option<aw_client_rust::blocking::AwClient>>> =
     Lazy::new(|| Mutex::new(None));
 static HOSTNAME: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("unknown".to_string()));
 static SERVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
+static OUTPUT_ONLY: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 
 // Cache for get_time function (matching Python's @cache_ttl decorator)
 type CacheValue = (DateTime<Utc>, HashMap<String, f64>);
@@ -48,6 +49,7 @@ const TD_8H: Duration = Duration::hours(8);
 #[clap(
     name = "aw-notify",
     about = "ActivityWatch notification service",
+    long_about = "ActivityWatch notification service\n\nProvides desktop notifications for time tracking data from ActivityWatch.\nUse --output-only to print notifications to stdout instead of showing desktop notifications (useful for scripting or integration with other tools).",
     version
 )]
 struct Cli {
@@ -60,15 +62,25 @@ struct Cli {
     #[clap(long, help = "Port to connect to ActivityWatch server")]
     port: Option<u16>,
 
+    #[clap(
+        long,
+        help = "Output only mode - print notification content to stdout instead of showing desktop notifications"
+    )]
+    output_only: bool,
+
     #[clap(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(clap::Subcommand)]
 enum Commands {
-    #[clap(about = "Start the notification service")]
+    #[clap(
+        about = "Start the notification service (use --output-only to print notifications instead of showing them)"
+    )]
     Start,
-    #[clap(about = "Send a summary notification")]
+    #[clap(
+        about = "Send a summary notification (use --output-only to print to stdout instead of showing notification)"
+    )]
     Checkin {
         #[clap(long, help = "Testing mode")]
         testing: bool,
@@ -90,6 +102,9 @@ fn main() -> Result<()> {
     });
 
     log::info!("Starting...");
+
+    // Set global output-only flag
+    *OUTPUT_ONLY.lock().unwrap() = cli.output_only;
 
     // Handle commands (matching Python's main function logic)
     match cli.command.unwrap_or(Commands::Start) {
@@ -680,6 +695,16 @@ fn check_server_availability() -> bool {
 }
 
 fn notify(title: &str, message: &str) -> Result<()> {
+    let output_only = *OUTPUT_ONLY.lock().unwrap();
+
+    if output_only {
+        // Output only mode - print to stdout with separators
+        println!("{}", "-".repeat(50));
+        println!("{}: {}", title, message);
+        println!("{}", "-".repeat(50));
+        return Ok(());
+    }
+
     log::info!(r#"Showing: "{} - {}""#, title, message);
 
     // Try terminal-notifier first on macOS (like Python)
