@@ -126,41 +126,13 @@ The application includes these pre-configured threshold alerts:
 4. **New day greetings**: Welcome message with current date
 5. **Server status**: Alerts when ActivityWatch server connectivity changes
 
-## Differences from Python Version
 
-### Advantages
-- **Performance**: ~10x faster startup, lower memory usage
-- **Safety**: Compile-time guarantees, no runtime crashes
-- **Dependencies**: Single binary with no Python runtime required
-- **Cross-platform**: Better native OS integration
-
-### Compatibility
+## Compatibility
 - **100% behavioral compatibility** with Python version
 - **Identical queries** and time calculations
 - **Same notification logic** and message formatting
 - **Matching cache behavior** and error handling
 
-## macOS Notifications
-
-On macOS, the app automatically uses `terminal-notifier` if available (like the Python version), falling back to the cross-platform notification system. If notifications aren't appearing:
-
-1. Go to System Preferences → Notifications & Focus
-2. Find your terminal app or the aw-notify binary
-3. Enable "Allow Notifications"
-
-## Development
-
-### Dependencies
-
-Core dependencies (simplified from 15+ to 8):
-- `aw-client-rust`: ActivityWatch client library
-- `chrono`: Date and time handling
-- `clap`: Command-line argument parsing
-- `notify-rust`: Cross-platform desktop notifications
-- `anyhow`: Error handling
-- `once_cell`: Global state management
-- `hostname`: System hostname detection
-- `serde_json`: JSON processing
 
 ### Building
 
@@ -188,13 +160,6 @@ If the service can't connect to ActivityWatch:
 2. Check the correct port (default: 5600, testing: 5666)
 3. Verify server accessibility: `curl http://localhost:5600/api/0/info`
 
-### Missing Categories
-
-If expected categories aren't showing:
-
-1. Ensure ActivityWatch watchers are running (`aw-watcher-window`, `aw-watcher-afk`)
-2. Check that categorization rules are configured in ActivityWatch
-3. Verify data exists in the ActivityWatch web interface
 
 ## License
 

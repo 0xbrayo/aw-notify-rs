@@ -14,7 +14,6 @@ use notify_rust::Notification;
 use once_cell::sync::Lazy;
 
 use std::collections::HashMap;
-use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -231,8 +230,6 @@ impl CategoryAlert {
         let time_to_threshold = self.time_to_next_threshold();
 
         if now > (self.last_check + time_to_threshold) {
-            log::debug!("Updating {}", self.category);
-
             // Get time data (will use cached version if available)
             match get_time(None, true) {
                 Ok(cat_time) => {
@@ -333,7 +330,6 @@ fn threshold_alerts() -> Result<()> {
             // Log status changes (like Python)
             let status = alert.status();
             if Some(&status) != alert.last_status.as_ref() {
-                log::debug!("New status: {}", status);
                 alert.last_status = Some(status);
             }
         }
@@ -352,13 +348,10 @@ fn get_time(date: Option<DateTime<Utc>>, top_level_only: bool) -> Result<HashMap
         let cache = TIME_CACHE.lock().unwrap();
         if let Some((cached_time, cached_data)) = cache.get(&cache_key) {
             if Utc::now() - *cached_time < Duration::seconds(CACHE_TTL_SECONDS) {
-                log::debug!("Using cached data for get_time");
                 return Ok(cached_data.clone());
             }
         }
     }
-
-    log::debug!("Cache expired for get_time, updating");
 
     // Query ActivityWatch (matching Python logic exactly)
     let result = query_activitywatch(date, top_level_only)?;
@@ -417,15 +410,7 @@ fn query_activitywatch(
     // Generate canonical events query (like old version)
     let canonical_events = query_params.canonical_events();
 
-    if env::var("AW_NOTIFY_SHOW_QUERIES").is_ok() || log::log_enabled!(log::Level::Debug) {
-        log::debug!("Generated canonical events query:");
-        log::debug!("=== CANONICAL EVENTS START ===");
-        for (i, line) in canonical_events.lines().enumerate() {
-            log::debug!("{:2}: {}", i + 1, line.trim());
-        }
-        log::debug!("=== CANONICAL EVENTS END ===");
-    }
-
+    // Build the complete query
     let query = format!(
         r#"{}
 duration = sum_durations(events);
@@ -434,17 +419,7 @@ RETURN = {{"events": events, "duration": duration, "cat_events": cat_events}};"#
         canonical_events
     );
 
-    if env::var("AW_NOTIFY_SHOW_QUERIES").is_ok() || log::log_enabled!(log::Level::Debug) {
-        log::debug!("Built complete category summary query:");
-        log::debug!("=== FULL QUERY START ===");
-        for (i, line) in query.lines().enumerate() {
-            if !line.trim().is_empty() {
-                log::debug!("{:2}: {}", i + 1, line.trim());
-            }
-        }
-        log::debug!("=== FULL QUERY END ===");
-    }
-
+    // Execute the query
     let timeperiods = vec![(*timeperiod.start(), *timeperiod.end())];
     let result = client.query(&query, timeperiods)?;
 
@@ -528,7 +503,7 @@ fn send_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
 
         notify(title, &message)?;
     } else {
-        log::debug!("No time spent");
+        // No time spent
     }
 
     Ok(())
@@ -556,10 +531,6 @@ fn start_hourly(hostname: String) {
                 .to_std()
                 .unwrap_or(time::Duration::from_secs(3600));
 
-            log::debug!(
-                "Sleeping for {:?} seconds until next hour",
-                sleep_time.as_secs()
-            );
             thread::sleep(sleep_time);
 
             // Check if user is active (like Python)
@@ -607,7 +578,7 @@ fn start_new_day(hostname: String) {
                         last_day = day;
                     }
                     Ok(Some(false)) => {
-                        log::debug!("User is AFK, not sending new day notification yet");
+                        // User is AFK, not sending new day notification yet
                     }
                     Ok(None) => {
                         log::warn!("Can't determine AFK status, skipping new day check");
@@ -674,8 +645,6 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
     let bucket_name = format!("aw-watcher-afk_{}", hostname);
     let events = client.get_events(&bucket_name, None, None, Some(1))?;
 
-    log::debug!("AFK events: {:?}", events);
-
     if events.is_empty() {
         return Ok(None);
     }
@@ -703,10 +672,7 @@ fn check_server_availability() -> bool {
     if let Some(client) = client.as_ref() {
         match client.get_info() {
             Ok(_) => true,
-            Err(e) => {
-                log::debug!("Server check failed: {}", e);
-                false
-            }
+            Err(_e) => false,
         }
     } else {
         false
@@ -811,23 +777,8 @@ fn get_server_classes(_hostname: &str) -> Vec<(CategoryId, CategorySpec)> {
 
     if server_classes.is_empty() {
         log::warn!("No server-side classes found, falling back to defaults");
-        let classes = default_classes();
-
-        if env::var("AW_NOTIFY_SHOW_QUERIES").is_ok() || log::log_enabled!(log::Level::Debug) {
-            log::debug!("Using default classes:");
-            for (i, (category, spec)) in classes.iter().enumerate() {
-                log::debug!("  {}: {:?} -> {:?}", i + 1, category, spec.regex);
-            }
-        }
-        classes
+        default_classes()
     } else {
-        log::debug!("Fetched {} classes from server", server_classes.len());
-        if env::var("AW_NOTIFY_SHOW_QUERIES").is_ok() || log::log_enabled!(log::Level::Debug) {
-            log::debug!("Server classes loaded:");
-            for (i, (category, spec)) in server_classes.iter().enumerate() {
-                log::debug!("  {}: {:?} -> {:?}", i + 1, category, spec.regex);
-            }
-        }
         server_classes
     }
 }
