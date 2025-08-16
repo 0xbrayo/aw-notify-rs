@@ -1,58 +1,32 @@
-.PHONY: build release test clean install check fmt clippy run help
+.PHONY: build
+SHELL := /usr/bin/env bash
 
-# Default target
-help:
-	@echo "Available targets:"
-	@echo "  build    - Build debug version"
-	@echo "  release  - Build optimized release version"
-	@echo "  test     - Run tests"
-	@echo "  check    - Check for compilation errors"
-	@echo "  fmt      - Format code"
-	@echo "  clippy   - Run clippy linter"
-	@echo "  clean    - Clean build artifacts"
-	@echo "  install  - Install to ~/.cargo/bin"
-	@echo "  run      - Run in development mode"
-	@echo "  run-test - Run in testing mode"
+# Build in release mode by default, unless RELEASE=false
+ifeq ($(RELEASE), false)
+		cargoflag :=
+		targetdir := debug
+else
+		cargoflag := --release
+		targetdir := release
+endif
 
 build:
-	cargo build
+	cargo build $(cargoflag)
 
-release:
-	cargo build --release
-
-test:
-	cargo test
-
-check:
-	cargo check
-
-fmt:
+fix:
 	cargo fmt
+	cargo clippy --fix
 
-clippy:
-	cargo clippy -- -D warnings
+package:
+	# Clean and prepare target/package folder
+	rm -rf target/package
+	mkdir -p target/package
+	# Copy binaries
+	cp target/$(targetdir)/aw-notify target/package/aw-notify
+	# Copy everything into `dist/aw-notify`
+	mkdir -p dist
+	rm -rf dist/aw-notify
+	cp -rf target/package dist/aw-notify
 
 clean:
 	cargo clean
-
-# Install to ~/.cargo/bin
-install:
-	cargo install --path .
-
-run:
-	RUST_LOG=info cargo run -- start --verbose
-
-# Run in testing mode
-run-test:
-	RUST_LOG=info cargo run -- start --testing --verbose
-
-# Run checkin command
-checkin:
-	cargo run -- checkin --verbose
-
-# Build and run all checks
-ci: fmt clippy test check
-
-# Build Docker image (if needed)
-docker:
-	docker build -t aw-notify-rs .
