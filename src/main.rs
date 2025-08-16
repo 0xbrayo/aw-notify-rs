@@ -700,12 +700,13 @@ fn notify(title: &str, message: &str) -> Result<()> {
     if output_only {
         // Output only mode - print to stdout with separators
         println!("{}", "-".repeat(50));
-        println!("{}: {}", title, message);
+        println!("{}:", title);
+        println!("{}", message);
         println!("{}", "-".repeat(50));
         return Ok(());
     }
 
-    log::info!(r#"Showing: "{} - {}""#, title, message);
+    log::info!(r#"Showing: "{}\n{}""#, title, message);
 
     // Try terminal-notifier first on macOS (like Python)
     #[cfg(target_os = "macos")]
@@ -740,12 +741,7 @@ fn try_terminal_notifier(title: &str, message: &str) -> Result<bool> {
                 .arg("-subtitle")
                 .arg(title)
                 .arg("-message")
-                .arg(
-                    message
-                        .trim_start_matches('-')
-                        .replace("- ", ", ")
-                        .replace('\n', ""),
-                )
+                .arg(message)
                 .arg("-group")
                 .arg(title)
                 .arg("-open")
