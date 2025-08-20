@@ -9,6 +9,7 @@ use aw_client_rust::queries::{DesktopQueryParams, QueryParams, QueryParamsBase};
 use aw_models::TimeInterval;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use clap::Parser;
+use crossbeam_channel::{bounded, Receiver};
 use hostname::get as get_hostname;
 use notify_rust::Notification;
 use once_cell::sync::Lazy;
@@ -161,6 +162,38 @@ fn main() -> Result<()> {
 fn start_service(hostname: String) -> Result<()> {
     log::info!("Starting notification service...");
 
+    // Create shutdown channels for each thread
+    let (shutdown_tx_main, shutdown_rx_main) = bounded::<()>(1);
+    let (shutdown_tx_hourly, shutdown_rx_hourly) = bounded::<()>(1);
+    let (shutdown_tx_newday, shutdown_rx_newday) = bounded::<()>(1);
+    let (shutdown_tx_monitor, shutdown_rx_monitor) = bounded::<()>(1);
+
+    // Setup signal handler for graceful shutdown (handles Ctrl+C, SIGTERM, etc.)
+    // This uses the ctrlc crate which provides cross-platform signal handling
+    let shutdown_senders = vec![
+        shutdown_tx_main.clone(),
+        shutdown_tx_hourly.clone(),
+        shutdown_tx_newday.clone(),
+        shutdown_tx_monitor.clone(),
+    ];
+
+    if let Err(e) = ctrlc::set_handler(move || {
+        log::info!("Received interrupt signal (Ctrl+C/SIGTERM), initiating graceful shutdown...");
+        // Send shutdown signal to all waiting threads
+        for sender in &shutdown_senders {
+            let _ = sender.try_send(());
+        }
+    }) {
+        log::warn!(
+            "Failed to setup signal handler: {}. Continuing without graceful shutdown support.",
+            e
+        );
+        // Continue running even if signal handler setup fails
+        return threshold_alerts(shutdown_rx_main);
+    }
+
+    log::debug!("Signal handler installed successfully");
+
     // Send initial notifications (matching Python's start function)
     if let Err(e) = send_checkin("Time today", None) {
         log::warn!("Failed to send initial checkin: {} (continuing anyway)", e);
@@ -174,12 +207,18 @@ fn start_service(hostname: String) -> Result<()> {
     }
 
     // Start background threads (matching Python's daemon threads)
-    start_hourly(hostname.clone());
-    start_new_day(hostname.clone());
-    start_server_monitor();
+    start_hourly(hostname.clone(), shutdown_rx_hourly);
+    start_new_day(hostname.clone(), shutdown_rx_newday);
+    start_server_monitor(shutdown_rx_monitor);
 
     // Main threshold monitoring loop (matching Python's threshold_alerts function)
-    threshold_alerts()
+    let result = threshold_alerts(shutdown_rx_main);
+
+    // Give background threads a moment to finish cleanup
+    thread::sleep(time::Duration::from_millis(100));
+
+    log::info!("Shutdown complete");
+    result
 }
 
 // CategoryAlert struct (exact copy of Python's CategoryAlert logic)
@@ -299,7 +338,7 @@ impl CategoryAlert {
     }
 }
 
-fn threshold_alerts() -> Result<()> {
+fn threshold_alerts(shutdown_rx: Receiver<()>) -> Result<()> {
     log::info!("Starting threshold alerts monitoring...");
 
     // Create alerts (matching Python exactly)
@@ -349,9 +388,25 @@ fn threshold_alerts() -> Result<()> {
             }
         }
 
-        // TODO: make configurable, perhaps increase default to save resources
-        thread::sleep(time::Duration::from_secs(10));
+        // Wait for shutdown signal or timeout (10 seconds for normal monitoring)
+        match shutdown_rx.recv_timeout(time::Duration::from_secs(10)) {
+            Ok(_) => {
+                log::info!("Shutdown signal received, stopping threshold alerts monitoring");
+                break;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                // Normal timeout, continue monitoring
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                log::warn!("Shutdown channel disconnected, stopping threshold alerts monitoring");
+                break;
+            }
+        }
     }
+
+    log::info!("Threshold alerts monitoring stopped");
+    Ok(())
 }
 
 // Cache implementation (matching Python's @cache_ttl decorator)
@@ -529,7 +584,7 @@ fn send_checkin_yesterday() -> Result<()> {
     send_checkin("Time yesterday", Some(yesterday))
 }
 
-fn start_hourly(hostname: String) {
+fn start_hourly(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting hourly checkin thread");
 
@@ -546,7 +601,20 @@ fn start_hourly(hostname: String) {
                 .to_std()
                 .unwrap_or(time::Duration::from_secs(3600));
 
-            thread::sleep(sleep_time);
+            // Wait for either timeout (next hour) or shutdown signal
+            match shutdown_rx.recv_timeout(sleep_time) {
+                Ok(_) => {
+                    log::info!("Shutdown signal received, stopping hourly checkin thread");
+                    break;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Time for hourly checkin
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    log::warn!("Shutdown channel disconnected, stopping hourly checkin thread");
+                    break;
+                }
+            }
 
             // Check if user is active (like Python)
             match get_active_status(&hostname) {
@@ -567,10 +635,12 @@ fn start_hourly(hostname: String) {
                 }
             }
         }
+
+        log::info!("Hourly checkin thread stopped");
     });
 }
 
-fn start_new_day(hostname: String) {
+fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting new day notification thread");
 
@@ -580,6 +650,7 @@ fn start_new_day(hostname: String) {
             let now = Utc::now();
             let day = (now - TIME_OFFSET).date_naive();
 
+            // Check for new day
             if day != last_day {
                 match get_active_status(&hostname) {
                     Ok(Some(true)) => {
@@ -593,7 +664,7 @@ fn start_new_day(hostname: String) {
                         last_day = day;
                     }
                     Ok(Some(false)) => {
-                        // User is AFK, not sending new day notification yet
+                        log::debug!("User is AFK, not sending new day notification yet");
                     }
                     Ok(None) => {
                         log::warn!("Can't determine AFK status, skipping new day check");
@@ -602,24 +673,74 @@ fn start_new_day(hostname: String) {
                         log::error!("Error getting AFK status: {}", e);
                     }
                 }
-            } else {
-                // Sleep until start of tomorrow if same day
-                let tomorrow = now + Duration::days(1);
-                let start_of_tomorrow = tomorrow.date_naive().and_hms_opt(0, 0, 0).unwrap();
-                let start_of_tomorrow = DateTime::from_naive_utc_and_offset(start_of_tomorrow, Utc);
-                let sleep_time = (start_of_tomorrow - now)
-                    .to_std()
-                    .unwrap_or(time::Duration::from_secs(3600));
-                thread::sleep(sleep_time);
             }
 
-            thread::sleep(time::Duration::from_secs(60)); // Check every minute
+            // Calculate adaptive polling interval
+            let sleep_time = calculate_new_day_polling_interval(now);
+
+            log::debug!(
+                "New day thread sleeping for {} minutes until next check",
+                sleep_time.as_secs() / 60
+            );
+
+            // Wait for shutdown signal or timeout
+            match shutdown_rx.recv_timeout(sleep_time) {
+                Ok(_) => {
+                    log::info!("Shutdown signal received, stopping new day notification thread");
+                    break;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Normal timeout, continue checking
+                    continue;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    log::warn!(
+                        "Shutdown channel disconnected, stopping new day notification thread"
+                    );
+                    break;
+                }
+            }
         }
+
+        log::info!("New day notification thread stopped");
     });
 }
 
-fn start_server_monitor() {
-    thread::spawn(|| {
+/// Calculate adaptive polling interval for new day detection
+/// - Poll hourly during most of the day
+/// - Poll every 5 minutes when less than 1 hour until midnight
+fn calculate_new_day_polling_interval(now: DateTime<Utc>) -> time::Duration {
+    // Calculate time until next midnight (accounting for TIME_OFFSET)
+    let current_day = (now - TIME_OFFSET).date_naive();
+    let next_midnight = current_day
+        .succ_opt()
+        .unwrap_or(current_day)
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let next_midnight_utc = DateTime::from_naive_utc_and_offset(next_midnight, Utc) + TIME_OFFSET;
+
+    let time_until_midnight = next_midnight_utc - now;
+    let minutes_until_midnight = time_until_midnight.num_minutes();
+
+    if minutes_until_midnight <= 60 {
+        // Less than 1 hour until midnight - poll every 5 minutes
+        log::debug!(
+            "New day approaching in {} minutes, using 5-minute polling",
+            minutes_until_midnight
+        );
+        time::Duration::from_secs(5 * 60) // 5 minutes
+    } else {
+        // More than 1 hour until midnight - poll hourly
+        log::debug!(
+            "New day in {} hours, using hourly polling",
+            minutes_until_midnight / 60
+        );
+        time::Duration::from_secs(60 * 60) // 1 hour
+    }
+}
+
+fn start_server_monitor(shutdown_rx: Receiver<()>) {
+    thread::spawn(move || {
         log::info!("Starting server monitor thread");
 
         loop {
@@ -646,8 +767,24 @@ fn start_server_monitor() {
                 SERVER_AVAILABLE.store(current_status, Ordering::Relaxed);
             }
 
-            thread::sleep(time::Duration::from_secs(10)); // Check every 10 seconds
+            // Wait for shutdown signal or timeout (10 seconds for monitoring)
+            match shutdown_rx.recv_timeout(time::Duration::from_secs(10)) {
+                Ok(_) => {
+                    log::info!("Shutdown signal received, stopping server monitor thread");
+                    break;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Normal timeout, continue monitoring
+                    continue;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    log::warn!("Shutdown channel disconnected, stopping server monitor thread");
+                    break;
+                }
+            }
         }
+
+        log::info!("Server monitor thread stopped");
     });
 }
 

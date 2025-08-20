@@ -44,6 +44,10 @@ serde_json = "1.0"
 # System hostname
 hostname = "0.3"
 
+# Signal handling for graceful shutdown
+ctrlc = "3.4"
+crossbeam-channel = "0.5"
+
 [profile.release]
 opt-level = 3
 lto = true
