@@ -64,7 +64,7 @@ jobs:
 
   build-linux-arm64:
     needs: create-release
-    runs-on: ubuntu-latest-arm64
+    runs-on: ubuntu-latest-arm
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
