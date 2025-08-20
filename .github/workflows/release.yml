@@ -11,7 +11,7 @@ env:
 
 jobs:
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       upload_url: ${{ steps.get_upload_url.outputs.url }}
     steps:
@@ -32,7 +32,7 @@ jobs:
 
   build-linux-x64:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -63,7 +63,7 @@ jobs:
 
   build-linux-arm64:
     needs: create-release
-    runs-on: ubuntu-latest-arm64
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
