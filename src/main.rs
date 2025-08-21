@@ -4,33 +4,31 @@
 //! similar to the Python version while maintaining Rust's safety and performance benefits.
 
 use anyhow::{anyhow, Result};
-use aw_client_rust::classes::{default_classes, get_classes_from_server, CategoryId, CategorySpec};
+use aw_client_rust::classes::{default_classes, CategoryId, CategorySpec, ClassSetting};
 use aw_client_rust::queries::{DesktopQueryParams, QueryParams, QueryParamsBase};
 use aw_models::TimeInterval;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver};
+use dashmap::DashMap;
 use hostname::get as get_hostname;
 use notify_rust::Notification;
 use once_cell::sync::Lazy;
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::thread;
 use std::time;
 
-// Global state (matching Python's global variables)
-static AW_CLIENT: Lazy<Mutex<Option<aw_client_rust::blocking::AwClient>>> =
-    Lazy::new(|| Mutex::new(None));
-static HOSTNAME: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new("unknown".to_string()));
+// Global state (matching Python's global variables) - using lock-free structures
+static AW_CLIENT: OnceLock<aw_client_rust::blocking::AwClient> = OnceLock::new();
+static HOSTNAME: OnceLock<String> = OnceLock::new();
 static SERVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
-static OUTPUT_ONLY: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+static OUTPUT_ONLY: AtomicBool = AtomicBool::new(false);
 
 // Cache for get_time function (matching Python's @cache_ttl decorator)
 type CacheValue = (DateTime<Utc>, HashMap<String, f64>);
-static TIME_CACHE: Lazy<Mutex<HashMap<String, CacheValue>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static TIME_CACHE: Lazy<DashMap<String, CacheValue>> = Lazy::new(DashMap::new);
 
 // Constants (matching Python exactly)
 const TIME_OFFSET: Duration = Duration::hours(4);
@@ -105,18 +103,18 @@ fn main() -> Result<()> {
     log::info!("Starting...");
 
     // Set global output-only flag
-    *OUTPUT_ONLY.lock().unwrap() = cli.output_only;
+    OUTPUT_ONLY.store(cli.output_only, Ordering::Relaxed);
 
     // Handle commands (matching Python's main function logic)
     match cli.command.unwrap_or(Commands::Start) {
         Commands::Start => {
             // Initialize client (matching Python's start function)
             let port = cli.port.unwrap_or(if cli.testing { 5666 } else { 5600 });
-            let client =
-                match aw_client_rust::blocking::AwClient::new("127.0.0.1", port, "aw-notify") {
-                    Ok(client) => client,
-                    Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
-                };
+            let host = "127.0.0.1";
+            let client = match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify") {
+                Ok(client) => client,
+                Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+            };
 
             // Wait for server to be ready (like Python's wait_for_start)
             client.get_info()?;
@@ -127,22 +125,20 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| "unknown".to_string());
 
             // Set global state
-            *AW_CLIENT.lock().unwrap() = Some(client);
-            *HOSTNAME.lock().unwrap() = hostname.clone();
+            AW_CLIENT.set(client).ok();
+            HOSTNAME.set(hostname.clone()).ok();
 
             start_service(hostname)
         }
         Commands::Checkin { testing } => {
             // Initialize client for checkin (matching Python's checkin function)
             let port = cli.port.unwrap_or(if testing { 5666 } else { 5600 });
-            let client = match aw_client_rust::blocking::AwClient::new(
-                "127.0.0.1",
-                port,
-                "aw-notify-checkin",
-            ) {
-                Ok(client) => client,
-                Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
-            };
+            let host = "127.0.0.1";
+            let client =
+                match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify-checkin") {
+                    Ok(client) => client,
+                    Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+                };
 
             // Get hostname like the original code
             let hostname = get_hostname()
@@ -150,8 +146,8 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| "unknown".to_string());
 
             // Set global state
-            *AW_CLIENT.lock().unwrap() = Some(client);
-            *HOSTNAME.lock().unwrap() = hostname;
+            AW_CLIENT.set(client).ok();
+            HOSTNAME.set(hostname).ok();
 
             send_checkin("Time today", None)?;
             Ok(())
@@ -413,24 +409,19 @@ fn threshold_alerts(shutdown_rx: Receiver<()>) -> Result<()> {
 fn get_time(date: Option<DateTime<Utc>>, top_level_only: bool) -> Result<HashMap<String, f64>> {
     let cache_key = format!("{:?}_{}", date, top_level_only);
 
-    // Check cache first
-    {
-        let cache = TIME_CACHE.lock().unwrap();
-        if let Some((cached_time, cached_data)) = cache.get(&cache_key) {
-            if Utc::now() - *cached_time < Duration::seconds(CACHE_TTL_SECONDS) {
-                return Ok(cached_data.clone());
-            }
+    // Check cache first (matching Python's @cache_ttl decorator)
+    if let Some(entry) = TIME_CACHE.get(&cache_key) {
+        let (cached_time, cached_data) = entry.value();
+        if (Utc::now() - *cached_time).num_seconds() < CACHE_TTL_SECONDS {
+            return Ok(cached_data.clone());
         }
     }
 
     // Query ActivityWatch (matching Python logic exactly)
     let result = query_activitywatch(date, top_level_only)?;
 
-    // Update cache
-    {
-        let mut cache = TIME_CACHE.lock().unwrap();
-        cache.insert(cache_key, (Utc::now(), result.clone()));
-    }
+    // Cache the result
+    TIME_CACHE.insert(cache_key, (Utc::now(), result.clone()));
 
     Ok(result)
 }
@@ -439,11 +430,13 @@ fn query_activitywatch(
     date: Option<DateTime<Utc>>,
     top_level_only: bool,
 ) -> Result<HashMap<String, f64>> {
-    let client = AW_CLIENT.lock().unwrap();
-    let client = client
-        .as_ref()
+    let client = AW_CLIENT
+        .get()
         .ok_or_else(|| anyhow!("Client not initialized"))?;
-    let hostname = HOSTNAME.lock().unwrap().clone();
+    let hostname = HOSTNAME
+        .get()
+        .ok_or_else(|| anyhow!("Hostname not initialized"))?
+        .clone();
 
     let date = date.unwrap_or_else(Utc::now);
 
@@ -464,7 +457,7 @@ fn query_activitywatch(
 
     let base_params = QueryParamsBase {
         bid_browsers: vec![],
-        classes: get_server_classes(&hostname),
+        classes: get_server_classes(),
         filter_classes: vec![],
         filter_afk: true,
         include_audible: true,
@@ -789,9 +782,8 @@ fn start_server_monitor(shutdown_rx: Receiver<()>) {
 }
 
 fn get_active_status(hostname: &str) -> Result<Option<bool>> {
-    let client = AW_CLIENT.lock().unwrap();
-    let client = client
-        .as_ref()
+    let client = AW_CLIENT
+        .get()
         .ok_or_else(|| anyhow!("Client not initialized"))?;
 
     let bucket_name = format!("aw-watcher-afk_{}", hostname);
@@ -820,8 +812,7 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
 }
 
 fn check_server_availability() -> bool {
-    let client = AW_CLIENT.lock().unwrap();
-    if let Some(client) = client.as_ref() {
+    if let Some(client) = AW_CLIENT.get() {
         match client.get_info() {
             Ok(_) => true,
             Err(_e) => false,
@@ -832,7 +823,7 @@ fn check_server_availability() -> bool {
 }
 
 fn notify(title: &str, message: &str) -> Result<()> {
-    let output_only = *OUTPUT_ONLY.lock().unwrap();
+    let output_only = OUTPUT_ONLY.load(Ordering::Relaxed);
 
     if output_only {
         // Output only mode - print to stdout with separators
@@ -927,18 +918,40 @@ fn decode_unicode_escapes(s: &str) -> String {
 }
 
 // === CATEGORY MATCHING AND PROCESSING FUNCTIONS ===
-
-/// Get categorization classes from server with fallback to defaults
-fn get_server_classes(_hostname: &str) -> Vec<(CategoryId, CategorySpec)> {
+//Get categorization classes from server with fallback to defaults
+fn get_server_classes() -> Vec<(CategoryId, CategorySpec)> {
     // Try to get classes from server (like old version)
-    let server_classes = get_classes_from_server("127.0.0.1", 5600);
+    let client = AW_CLIENT.get().unwrap();
 
-    if server_classes.is_empty() {
-        log::warn!("No server-side classes found, falling back to defaults");
-        default_classes()
-    } else {
-        server_classes
-    }
+    client
+        .get_setting("classes")
+        .map(|setting_value| {
+            // Try to deserialize the setting into Vec<ClassSetting>
+            if setting_value.is_null() {
+                return default_classes();
+            }
+
+            let class_settings: Vec<ClassSetting> = match serde_json::from_value(setting_value) {
+                Ok(classes) => classes,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to deserialize classes setting: {}, using default classes",
+                        e
+                    );
+                    return default_classes();
+                }
+            };
+
+            // Convert ClassSetting to (CategoryId, CategorySpec) format
+            class_settings
+                .into_iter()
+                .map(|class| (class.name, class.rule))
+                .collect()
+        })
+        .unwrap_or_else(|_| {
+            log::warn!("Failed to get classes from server, using default classes as fallback",);
+            default_classes()
+        })
 }
 
 /// Aggregate hierarchical categories by their top-level category

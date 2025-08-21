@@ -47,6 +47,7 @@ hostname = "0.3"
 # Signal handling for graceful shutdown
 ctrlc = "3.4"
 crossbeam-channel = "0.5"
+dashmap = "6.1.0"
 
 [profile.release]
 opt-level = 3
