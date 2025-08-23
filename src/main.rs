@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use hostname::get as get_hostname;
 use notify_rust::Notification;
 use once_cell::sync::Lazy;
+use std::cmp::Ordering as cmpOrdering;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -455,6 +456,14 @@ fn query_activitywatch(
     let bid_window = format!("aw-watcher-window_{}", hostname);
     let bid_afk = format!("aw-watcher-afk_{}", hostname);
 
+    // Should never fail
+    let always_active_pattern = Some(
+        client
+            .get_setting("always_active_pattern")
+            .expect("failed to fetch always_active_pattern")
+            .to_string(),
+    );
+
     let base_params = QueryParamsBase {
         bid_browsers: vec![],
         classes: get_server_classes(),
@@ -467,6 +476,7 @@ fn query_activitywatch(
         base: base_params,
         bid_window,
         bid_afk,
+        always_active_pattern,
     };
     let query_params = QueryParams::Desktop(desktop_params);
 
@@ -1026,7 +1036,7 @@ fn get_top_categories(
         .collect();
 
     // Sort by time spent (descending)
-    categories.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    categories.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(cmpOrdering::Equal));
 
     // Limit to max_count and format durations
     categories
