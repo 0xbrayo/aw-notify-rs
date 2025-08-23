@@ -243,9 +243,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "aw-client-rust"
 version = "0.1.0"
-source = "git+https://github.com/0xbrayo/aw-server-rust?branch=queries-fix#983cb9fbadbc3c7ce3b16a8ccdf698e5a044d7c1"
+source = "git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern#9c72e68b486cd3d023528ca9a1d9f149138e982e"
 dependencies = [
- "aw-models 0.1.0 (git+https://github.com/0xbrayo/aw-server-rust?branch=queries-fix)",
+ "aw-models 0.1.0 (git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern)",
  "chrono",
  "dirs",
  "fs4",
@@ -264,7 +264,7 @@ dependencies = [
 [[package]]
 name = "aw-models"
 version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#f4bb94dfd5732ec61d164400e3b9e706b2b4dc78"
+source = "git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern#9c72e68b486cd3d023528ca9a1d9f149138e982e"
 dependencies = [
  "chrono",
  "log",
@@ -276,7 +276,7 @@ dependencies = [
 [[package]]
 name = "aw-models"
 version = "0.1.0"
-source = "git+https://github.com/0xbrayo/aw-server-rust?branch=queries-fix#983cb9fbadbc3c7ce3b16a8ccdf698e5a044d7c1"
+source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#f4bb94dfd5732ec61d164400e3b9e706b2b4dc78"
 dependencies = [
  "chrono",
  "log",
