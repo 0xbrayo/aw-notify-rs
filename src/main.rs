@@ -427,6 +427,32 @@ fn get_time(date: Option<DateTime<Utc>>, top_level_only: bool) -> Result<HashMap
     Ok(result)
 }
 
+/// Query ActivityWatch for time spent per category for a given date.
+///
+/// Returns a map of category name -> seconds spent for the requested date.
+/// - If `date` is `None`, the current UTC date is used.
+/// - If `top_level_only` is true, hierarchical categories (e.g. `"Work > Coding"`) are
+///   aggregated to their top-level category (the substring before the first `" > "`).
+///
+/// Errors if the global ActivityWatch client or hostname have not been initialized,
+/// or if the underlying query fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::collections::HashMap;
+/// // Query today and get top-level aggregates
+/// let res: anyhow::Result<HashMap<String, f64>> = query_activitywatch(None, true);
+/// match res {
+///     Ok(map) => {
+///         // e.g. map.get("All") -> total seconds for the day
+///         assert!(map.contains_key("All"));
+///     }
+///     Err(_) => {
+///         // client/hostname may be uninitialized in this example environment
+///     }
+/// }
+/// ```
 fn query_activitywatch(
     date: Option<DateTime<Utc>>,
     top_level_only: bool,
@@ -1017,7 +1043,30 @@ fn format_category_for_notification(category: &str) -> String {
     format!("{} {}", icon, category)
 }
 
-/// Get top categories sorted by time spent with clean formatting
+/// Returns the top categories by time spent (excluding "All"), sorted descending and formatted.
+///
+/// - cat_time: map of category name -> seconds (must include "All" for total time).
+/// - min_percent: minimum fraction of the total ("All") a category must exceed to be included (e.g., 0.01 for 1%).
+/// - max_count: maximum number of categories to return.
+///
+/// The result is a vector of (category, human-readable-duration) pairs, limited to `max_count`.
+/// If the total time ("All") is missing or non-positive, an empty vector is returned.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// // Build a simple cat_time map (in seconds)
+/// let mut cat_time = HashMap::new();
+/// cat_time.insert("All".to_string(), 10_800.0); // 3 hours
+/// cat_time.insert("Work".to_string(), 7_200.0); // 2 hours
+/// cat_time.insert("YouTube".to_string(), 1_800.0); // 30 minutes
+/// cat_time.insert("Twitter".to_string(), 900.0); // 15 minutes
+///
+/// let top = get_top_categories(&cat_time, 0.05, 3); // min 5%
+/// // Expect up to 3 categories (Work, YouTube, Twitter) filtered/sorted by time
+/// assert!(top.len() <= 3);
+/// ```
 fn get_top_categories(
     cat_time: &HashMap<String, f64>,
     min_percent: f64,
