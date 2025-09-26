@@ -681,10 +681,7 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
             // Calculate adaptive polling interval
             let sleep_time = calculate_new_day_polling_interval(now);
 
-            log::debug!(
-                "New day thread sleeping for {} minutes until next check",
-                sleep_time.as_secs() / 60
-            );
+            log::debug!("New day thread sleeping for 5 minutes until next check");
 
             // Wait for shutdown signal or timeout
             match shutdown_rx.recv_timeout(sleep_time) {
@@ -709,37 +706,11 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
     });
 }
 
-/// Calculate adaptive polling interval for new day detection
-/// - Poll hourly during most of the day
-/// - Poll every 5 minutes when less than 1 hour until midnight
-fn calculate_new_day_polling_interval(now: DateTime<Utc>) -> time::Duration {
-    // Calculate time until next midnight (accounting for TIME_OFFSET)
-    let current_day = (now - TIME_OFFSET).date_naive();
-    let next_midnight = current_day
-        .succ_opt()
-        .unwrap_or(current_day)
-        .and_hms_opt(0, 0, 0)
-        .unwrap();
-    let next_midnight_utc = DateTime::from_naive_utc_and_offset(next_midnight, Utc) + TIME_OFFSET;
-
-    let time_until_midnight = next_midnight_utc - now;
-    let minutes_until_midnight = time_until_midnight.num_minutes();
-
-    if minutes_until_midnight <= 60 {
-        // Less than 1 hour until midnight - poll every 5 minutes
-        log::debug!(
-            "New day approaching in {} minutes, using 5-minute polling",
-            minutes_until_midnight
-        );
-        time::Duration::from_secs(5 * 60) // 5 minutes
-    } else {
-        // More than 1 hour until midnight - poll hourly
-        log::debug!(
-            "New day in {} hours, using hourly polling",
-            minutes_until_midnight / 60
-        );
-        time::Duration::from_secs(60 * 60) // 1 hour
-    }
+/// Calculate polling interval for new day detection
+/// - Always poll every 5 minutes for consistent checking
+fn calculate_new_day_polling_interval(_now: DateTime<Utc>) -> time::Duration {
+    log::debug!("Using 5-minute polling for new day detection");
+    time::Duration::from_secs(5 * 60) // 5 minutes
 }
 
 fn start_server_monitor(shutdown_rx: Receiver<()>) {
