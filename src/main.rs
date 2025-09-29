@@ -7,27 +7,28 @@ use anyhow::{anyhow, Result};
 use aw_client_rust::classes::{default_classes, CategoryId, CategorySpec, ClassSetting};
 use aw_client_rust::queries::{DesktopQueryParams, QueryParams, QueryParamsBase};
 use aw_models::TimeInterval;
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Timelike, Utc};
 use clap::Parser;
 use crossbeam_channel::{bounded, Receiver};
 use dashmap::DashMap;
 use hostname::get as get_hostname;
 use notify_rust::Notification;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as cmpOrdering;
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time;
 
-// Global state (matching Python's global variables) - using lock-free structures
 static AW_CLIENT: OnceLock<aw_client_rust::blocking::AwClient> = OnceLock::new();
 static HOSTNAME: OnceLock<String> = OnceLock::new();
 static SERVER_AVAILABLE: AtomicBool = AtomicBool::new(true);
 static OUTPUT_ONLY: AtomicBool = AtomicBool::new(false);
 
-// Cache for get_time function (matching Python's @cache_ttl decorator)
 type CacheValue = (DateTime<Utc>, HashMap<String, f64>);
 static TIME_CACHE: Lazy<DashMap<String, CacheValue>> = Lazy::new(DashMap::new);
 
@@ -35,21 +36,87 @@ static TIME_CACHE: Lazy<DashMap<String, CacheValue>> = Lazy::new(DashMap::new);
 const TIME_OFFSET: Duration = Duration::hours(4);
 const CACHE_TTL_SECONDS: i64 = 60;
 
-// Duration constants for convenience
-const TD_15MIN: Duration = Duration::minutes(15);
-const TD_30MIN: Duration = Duration::minutes(30);
-const TD_1H: Duration = Duration::hours(1);
-const TD_2H: Duration = Duration::hours(2);
-const TD_4H: Duration = Duration::hours(4);
-const TD_6H: Duration = Duration::hours(6);
-const TD_8H: Duration = Duration::hours(8);
+/// Category aggregation mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CategoryAggregation {
+    /// No aggregation - return full category hierarchy (e.g., "Work > Programming > Rust")
+    None,
+    /// Aggregate to top-level categories only (e.g., "Work")
+    TopLevelOnly,
+    /// Aggregate by all levels - includes both parent and leaf categories
+    /// (e.g., "Work", "Work > Programming", "Work > Programming > Rust")
+    AllLevels,
+}
 
-// CLI structure (simplified, matching Python's click interface)
+// Configuration structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertConfig {
+    pub category: String,
+    pub label: Option<String>,
+    pub thresholds_minutes: Vec<u64>,
+    pub positive: bool,
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        Self {
+            category: "All".to_string(),
+            label: None,
+            thresholds_minutes: vec![60, 120, 240, 360, 480], // 1h, 2h, 4h, 6h, 8h
+            positive: false,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    pub alerts: Vec<AlertConfig>,
+    pub hourly_checkins: bool,
+    pub new_day_greetings: bool,
+    pub server_monitoring: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            alerts: vec![
+                AlertConfig {
+                    category: "All".to_string(),
+                    label: Some("All".to_string()),
+                    thresholds_minutes: vec![60, 120, 240, 360, 480], // 1h, 2h, 4h, 6h, 8h
+                    positive: false,
+                },
+                AlertConfig {
+                    category: "Media > Social Media".to_string(),
+                    label: Some("🐦 Social Media".to_string()),
+                    thresholds_minutes: vec![15, 30, 60], // 15min, 30min, 1h
+                    positive: false,
+                },
+                AlertConfig {
+                    category: "Media".to_string(),
+                    label: Some("📺 Media".to_string()),
+                    thresholds_minutes: vec![30, 60, 120, 240], // 30min, 1h, 2h, 4h
+                    positive: false,
+                },
+                AlertConfig {
+                    category: "Work".to_string(),
+                    label: Some("💼 Work".to_string()),
+                    thresholds_minutes: vec![15, 30, 60, 120, 240], // 15min, 30min, 1h, 2h, 4h
+                    positive: true,
+                },
+            ],
+            hourly_checkins: true,
+            new_day_greetings: true,
+            server_monitoring: true,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[clap(
     name = "aw-notify",
     about = "ActivityWatch notification service",
-    long_about = "ActivityWatch notification service\n\nProvides desktop notifications for time tracking data from ActivityWatch.\nUse --output-only to print notifications to stdout instead of showing desktop notifications (useful for scripting or integration with other tools).",
+    long_about = "ActivityWatch notification service\n\nProvides desktop notifications for time tracking data from ActivityWatch.\nUse --output-only to print notifications to stdout instead of showing desktop notifications (useful for scripting or integration with other tools(aw-tauri)).",
     version
 )]
 struct Cli {
@@ -85,12 +152,62 @@ enum Commands {
         #[clap(long, help = "Testing mode")]
         testing: bool,
     },
+    #[clap(
+        about = "Send a detailed summary with all category levels (parent and leaf categories)"
+    )]
+    CheckinDetailed {
+        #[clap(long, help = "Testing mode")]
+        testing: bool,
+    },
+}
+
+// Configuration loading functions
+fn get_default_config_path() -> PathBuf {
+    let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("aw-notify");
+    path.push("config.toml");
+    path
+}
+
+fn load_config() -> Result<NotificationConfig> {
+    let config_path = get_default_config_path();
+
+    if !config_path.exists() {
+        log::info!(
+            "Config file not found at {:?}, creating default configuration",
+            config_path
+        );
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| anyhow!("Failed to create config directory {:?}: {}", parent, e))?;
+        }
+
+        let default_config = NotificationConfig::default();
+        let config_content = toml::to_string_pretty(&default_config)
+            .map_err(|e| anyhow!("Failed to serialize default config: {}", e))?;
+
+        fs::write(&config_path, config_content)
+            .map_err(|e| anyhow!("Failed to write config file {:?}: {}", config_path, e))?;
+
+        log::info!("Default configuration saved to {:?}", config_path);
+        return Ok(default_config);
+    }
+
+    let config_content = fs::read_to_string(&config_path)
+        .map_err(|e| anyhow!("Failed to read config file {:?}: {}", config_path, e))?;
+
+    let config: NotificationConfig = toml::from_str(&config_content)
+        .map_err(|e| anyhow!("Failed to parse config file {:?}: {}", config_path, e))?;
+
+    log::info!("Loaded configuration from {:?}", config_path);
+    Ok(config)
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Setup logging (matching Python's setup_logging)
     let log_level = if cli.verbose { "debug" } else { "info" };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
 
@@ -109,6 +226,9 @@ fn main() -> Result<()> {
     // Handle commands (matching Python's main function logic)
     match cli.command.unwrap_or(Commands::Start) {
         Commands::Start => {
+            // Load configuration
+            let config = load_config()?;
+
             // Initialize client (matching Python's start function)
             let port = cli.port.unwrap_or(if cli.testing { 5666 } else { 5600 });
             let host = "127.0.0.1";
@@ -120,7 +240,6 @@ fn main() -> Result<()> {
             // Wait for server to be ready (like Python's wait_for_start)
             client.get_info()?;
 
-            // Get hostname like the original code
             let hostname = get_hostname()
                 .map(|h| h.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
@@ -129,7 +248,7 @@ fn main() -> Result<()> {
             AW_CLIENT.set(client).ok();
             HOSTNAME.set(hostname.clone()).ok();
 
-            start_service(hostname)
+            start_service(hostname, config)
         }
         Commands::Checkin { testing } => {
             // Initialize client for checkin (matching Python's checkin function)
@@ -141,7 +260,6 @@ fn main() -> Result<()> {
                     Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
                 };
 
-            // Get hostname like the original code
             let hostname = get_hostname()
                 .map(|h| h.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
@@ -153,10 +271,31 @@ fn main() -> Result<()> {
             send_checkin("Time today", None)?;
             Ok(())
         }
+        Commands::CheckinDetailed { testing } => {
+            // Initialize client for detailed checkin
+            let port = cli.port.unwrap_or(if testing { 5666 } else { 5600 });
+            let host = "127.0.0.1";
+            let client =
+                match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify-checkin") {
+                    Ok(client) => client,
+                    Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+                };
+
+            let hostname = get_hostname()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            // Set global state
+            AW_CLIENT.set(client).ok();
+            HOSTNAME.set(hostname).ok();
+
+            send_detailed_checkin("Detailed Time Summary", None)?;
+            Ok(())
+        }
     }
 }
 
-fn start_service(hostname: String) -> Result<()> {
+fn start_service(hostname: String, config: NotificationConfig) -> Result<()> {
     log::info!("Starting notification service...");
 
     // Create shutdown channels for each thread
@@ -186,7 +325,7 @@ fn start_service(hostname: String) -> Result<()> {
             e
         );
         // Continue running even if signal handler setup fails
-        return threshold_alerts(shutdown_rx_main);
+        return threshold_alerts(shutdown_rx_main, config.alerts);
     }
 
     log::debug!("Signal handler installed successfully");
@@ -203,13 +342,27 @@ fn start_service(hostname: String) -> Result<()> {
         );
     }
 
-    // Start background threads (matching Python's daemon threads)
-    start_hourly(hostname.clone(), shutdown_rx_hourly);
-    start_new_day(hostname.clone(), shutdown_rx_newday);
-    start_server_monitor(shutdown_rx_monitor);
+    // Start background threads based on configuration
+    if config.hourly_checkins {
+        start_hourly(hostname.clone(), shutdown_rx_hourly);
+    } else {
+        log::info!("Hourly checkins disabled in configuration");
+    }
+
+    if config.new_day_greetings {
+        start_new_day(hostname.clone(), shutdown_rx_newday);
+    } else {
+        log::info!("New day greetings disabled in configuration");
+    }
+
+    if config.server_monitoring {
+        start_server_monitor(shutdown_rx_monitor);
+    } else {
+        log::info!("Server monitoring disabled in configuration");
+    }
 
     // Main threshold monitoring loop (matching Python's threshold_alerts function)
-    let result = threshold_alerts(shutdown_rx_main);
+    let result = threshold_alerts(shutdown_rx_main, config.alerts);
 
     // Give background threads a moment to finish cleanup
     thread::sleep(time::Duration::from_millis(100));
@@ -256,9 +409,9 @@ impl CategoryAlert {
         let untriggered = self.thresholds_untriggered();
         if untriggered.is_empty() {
             // If no thresholds to trigger, wait until tomorrow (like Python)
-            let now = Utc::now();
+            let now = Local::now();
             let day_end = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-            let mut day_end = DateTime::from_naive_utc_and_offset(day_end, Utc);
+            let mut day_end = Local.from_local_datetime(&day_end).single().unwrap();
             if day_end < now {
                 day_end += Duration::days(1);
             }
@@ -277,12 +430,12 @@ impl CategoryAlert {
     }
 
     fn update(&mut self) {
-        let now = Utc::now();
+        let now = Local::now();
         let time_to_threshold = self.time_to_next_threshold();
 
-        if now > (self.last_check + time_to_threshold) {
+        if now.with_timezone(&Utc) > (self.last_check + time_to_threshold) {
             // Get time data (will use cached version if available)
-            match get_time(None, true) {
+            match get_time(None, CategoryAggregation::AllLevels) {
                 Ok(cat_time) => {
                     if let Some(&seconds) = cat_time.get(&self.category) {
                         self.time_spent = Duration::seconds(seconds as i64);
@@ -292,7 +445,7 @@ impl CategoryAlert {
                     log::error!("Error getting time for {}: {}", self.category, e);
                 }
             }
-            self.last_check = now;
+            self.last_check = now.with_timezone(&Utc);
         }
     }
 
@@ -335,36 +488,36 @@ impl CategoryAlert {
     }
 }
 
-fn threshold_alerts(shutdown_rx: Receiver<()>) -> Result<()> {
+fn threshold_alerts(shutdown_rx: Receiver<()>, alert_configs: Vec<AlertConfig>) -> Result<()> {
     log::info!("Starting threshold alerts monitoring...");
 
-    // Create alerts (matching Python exactly)
-    let mut alerts = vec![
-        CategoryAlert::new(
-            "All",
-            vec![TD_1H, TD_2H, TD_4H, TD_6H, TD_8H],
-            Some("All"),
-            false,
-        ),
-        CategoryAlert::new(
-            "Twitter",
-            vec![TD_15MIN, TD_30MIN, TD_1H],
-            Some("🐦 Twitter"),
-            false,
-        ),
-        CategoryAlert::new(
-            "Youtube",
-            vec![TD_15MIN, TD_30MIN, TD_1H],
-            Some("📺 Youtube"),
-            false,
-        ),
-        CategoryAlert::new(
-            "Work",
-            vec![TD_15MIN, TD_30MIN, TD_1H, TD_2H, TD_4H],
-            Some("💼 Work"),
-            true,
-        ),
-    ];
+    if alert_configs.is_empty() {
+        log::info!("No alerts configured, threshold monitoring disabled");
+        // Still wait for shutdown signal
+        let _ = shutdown_rx.recv();
+        return Ok(());
+    }
+
+    // Create alerts from configuration
+    let mut alerts: Vec<CategoryAlert> = alert_configs
+        .into_iter()
+        .map(|config| {
+            let thresholds: Vec<Duration> = config
+                .thresholds_minutes
+                .into_iter()
+                .map(|minutes| Duration::minutes(minutes as i64))
+                .collect();
+
+            CategoryAlert::new(
+                &config.category,
+                thresholds,
+                config.label.as_deref(),
+                config.positive,
+            )
+        })
+        .collect();
+
+    log::info!("Configured {} alert(s)", alerts.len());
 
     // Run through them once to check if any thresholds have been reached (silent)
     for alert in &mut alerts {
@@ -407,29 +560,35 @@ fn threshold_alerts(shutdown_rx: Receiver<()>) -> Result<()> {
 }
 
 // Cache implementation (matching Python's @cache_ttl decorator)
-fn get_time(date: Option<DateTime<Utc>>, top_level_only: bool) -> Result<HashMap<String, f64>> {
-    let cache_key = format!("{:?}_{}", date, top_level_only);
+fn get_time(
+    date: Option<DateTime<Utc>>,
+    aggregation_mode: CategoryAggregation,
+) -> Result<HashMap<String, f64>> {
+    let cache_key = format!("{:?}_{:?}", date, aggregation_mode);
 
     // Check cache first (matching Python's @cache_ttl decorator)
     if let Some(entry) = TIME_CACHE.get(&cache_key) {
         let (cached_time, cached_data) = entry.value();
-        if (Utc::now() - *cached_time).num_seconds() < CACHE_TTL_SECONDS {
+        if (Local::now().with_timezone(&Utc) - *cached_time).num_seconds() < CACHE_TTL_SECONDS {
             return Ok(cached_data.clone());
         }
     }
 
     // Query ActivityWatch (matching Python logic exactly)
-    let result = query_activitywatch(date, top_level_only)?;
+    let result = query_activitywatch(date, aggregation_mode)?;
 
     // Cache the result
-    TIME_CACHE.insert(cache_key, (Utc::now(), result.clone()));
+    TIME_CACHE.insert(
+        cache_key,
+        (Local::now().with_timezone(&Utc), result.clone()),
+    );
 
     Ok(result)
 }
 
 fn query_activitywatch(
     date: Option<DateTime<Utc>>,
-    top_level_only: bool,
+    aggregation_mode: CategoryAggregation,
 ) -> Result<HashMap<String, f64>> {
     let client = AW_CLIENT
         .get()
@@ -439,13 +598,26 @@ fn query_activitywatch(
         .ok_or_else(|| anyhow!("Hostname not initialized"))?
         .clone();
 
-    let date = date.unwrap_or_else(Utc::now);
+    let date = date.unwrap_or_else(|| Local::now().with_timezone(&Utc));
 
     // Set timeperiod to the requested date (like old version)
-    let day_start = Utc
-        .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+    let local_date = date.with_timezone(&Local);
+    log::debug!(
+        "Query date in local timezone: {}",
+        local_date.format("%Y-%m-%d %H:%M:%S %z")
+    );
+    let day_start = Local
+        .with_ymd_and_hms(
+            local_date.year(),
+            local_date.month(),
+            local_date.day(),
+            0,
+            0,
+            0,
+        )
         .single()
-        .unwrap();
+        .unwrap()
+        .with_timezone(&Utc);
 
     let timeperiod = TimeInterval::new(
         day_start + TIME_OFFSET,
@@ -456,13 +628,13 @@ fn query_activitywatch(
     let bid_window = format!("aw-watcher-window_{}", hostname);
     let bid_afk = format!("aw-watcher-afk_{}", hostname);
 
-    // Should never fail
-    let always_active_pattern = Some(
-        client
-            .get_setting("always_active_pattern")
-            .expect("failed to fetch always_active_pattern")
-            .to_string(),
-    );
+    let always_active_pattern = match client.get_setting("always_active_pattern") {
+        Ok(v) => v.as_str().map(|s| s.to_string()),
+        Err(e) => {
+            log::warn!("Failed to fetch always_active_pattern: {}", e);
+            None
+        }
+    };
 
     let base_params = QueryParamsBase {
         bid_browsers: vec![],
@@ -551,18 +723,18 @@ RETURN = {{"events": events, "duration": duration, "cat_events": cat_events}};"#
         cat_time.insert("All".to_string(), 0.0);
     }
 
-    // If top_level_only, aggregate hierarchical categories
-    if top_level_only {
-        return Ok(aggregate_categories_by_top_level(&cat_time));
+    // Apply aggregation based on the mode
+    match aggregation_mode {
+        CategoryAggregation::None => Ok(cat_time),
+        CategoryAggregation::TopLevelOnly => Ok(aggregate_categories_by_top_level(&cat_time)),
+        CategoryAggregation::AllLevels => Ok(aggregate_categories_by_all_levels(&cat_time)),
     }
-
-    Ok(cat_time)
 }
 
 fn send_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
     log::info!("Sending checkin: {}", title);
 
-    let cat_time = get_time(date, true)?;
+    let cat_time = get_time(date, CategoryAggregation::TopLevelOnly)?;
 
     // Get top categories with clean formatting (like old version)
     let top_categories = get_top_level_categories_for_notifications(&cat_time, 0.02, 4);
@@ -582,8 +754,31 @@ fn send_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
     Ok(())
 }
 
+fn send_detailed_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
+    log::info!("Sending detailed checkin: {}", title);
+
+    let cat_time = get_time(date, CategoryAggregation::AllLevels)?;
+
+    // Get top categories with all-level aggregation
+    let top_categories = get_all_level_categories_for_notifications(&cat_time, 0.02, 10);
+
+    if !top_categories.is_empty() {
+        let message = top_categories
+            .iter()
+            .map(|(cat, time)| format!("- {}: {}", decode_unicode_escapes(cat), time))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        notify(title, &message)?;
+    } else {
+        // No time spent
+    }
+
+    Ok(())
+}
+
 fn send_checkin_yesterday() -> Result<()> {
-    let yesterday = Utc::now() - Duration::days(1);
+    let yesterday = Local::now().with_timezone(&Utc) - Duration::days(1);
     send_checkin("Time yesterday", Some(yesterday))
 }
 
@@ -593,13 +788,13 @@ fn start_hourly(hostname: String, shutdown_rx: Receiver<()>) {
 
         loop {
             // Wait until next whole hour (like Python)
-            let now = Utc::now();
+            let now = Local::now();
             let next_hour = now + Duration::hours(1);
             let next_hour = next_hour
                 .date_naive()
                 .and_hms_opt(next_hour.hour(), 0, 0)
                 .unwrap();
-            let next_hour = DateTime::from_naive_utc_and_offset(next_hour, Utc);
+            let next_hour = Local.from_local_datetime(&next_hour).single().unwrap();
             let sleep_time = (next_hour - now)
                 .to_std()
                 .unwrap_or(time::Duration::from_secs(3600));
@@ -647,11 +842,20 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting new day notification thread");
 
-        let mut last_day = (Utc::now() - TIME_OFFSET).date_naive();
+        let mut last_day = (Local::now() - TIME_OFFSET).date_naive();
+        log::info!(
+            "Starting new day detection with local timezone: {}",
+            Local::now().format("%Y-%m-%d %H:%M:%S %z")
+        );
 
         loop {
-            let now = Utc::now();
+            let now = Local::now();
             let day = (now - TIME_OFFSET).date_naive();
+            log::debug!(
+                "Checking new day: current local time = {}, day = {}",
+                now.format("%Y-%m-%d %H:%M:%S %z"),
+                day
+            );
 
             // Check for new day
             if day != last_day {
@@ -708,7 +912,7 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
 
 /// Calculate polling interval for new day detection
 /// - Always poll every 5 minutes for consistent checking
-fn calculate_new_day_polling_interval(_now: DateTime<Utc>) -> time::Duration {
+fn calculate_new_day_polling_interval(_now: DateTime<Local>) -> time::Duration {
     log::debug!("Using 5-minute polling for new day detection");
     time::Duration::from_secs(5 * 60) // 5 minutes
 }
@@ -778,7 +982,7 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
     let event_end = event.timestamp + event.duration;
 
     // Check if event is too old (like Python - 5 minutes)
-    if event_end < Utc::now() - Duration::minutes(5) {
+    if event_end < Local::now().with_timezone(&Utc) - Duration::minutes(5) {
         log::warn!("AFK event is too old, can't use to reliably determine AFK state");
         return Ok(None);
     }
@@ -961,6 +1165,60 @@ fn aggregate_categories_by_top_level(cat_time: &HashMap<String, f64>) -> HashMap
     aggregated
 }
 
+/// Aggregate categories by all levels (top-level and nested)
+///
+/// This function creates entries for every level of the category hierarchy,
+/// allowing you to see both overview totals and detailed breakdowns.
+///
+/// # Example
+///
+/// Given input categories with times:
+/// - "Work > Programming > Rust": 30 minutes
+/// - "Work > Programming > Python": 20 minutes
+/// - "Work > Meetings": 15 minutes
+/// - "Personal > Reading": 10 minutes
+///
+/// This function returns:
+/// - "Work": 65 minutes (total of all Work subcategories)
+/// - "Work > Programming": 50 minutes (total of Programming subcategories)
+/// - "Work > Programming > Rust": 30 minutes (leaf category)
+/// - "Work > Programming > Python": 20 minutes (leaf category)
+/// - "Work > Meetings": 15 minutes (leaf category)
+/// - "Personal": 10 minutes (total of all Personal subcategories)
+/// - "Personal > Reading": 10 minutes (leaf category)
+///
+/// # Use Cases
+///
+/// This aggregation mode is useful when you want:
+/// - A comprehensive view showing both high-level summaries and details
+/// - To understand time distribution across different hierarchy levels
+/// - To track both "total time in Work" and "time in specific Work activities"
+fn aggregate_categories_by_all_levels(cat_time: &HashMap<String, f64>) -> HashMap<String, f64> {
+    let mut aggregated: HashMap<String, f64> = HashMap::new();
+
+    for (category, time) in cat_time {
+        if category == "All" {
+            // Preserve the "All" category
+            aggregated.insert(category.clone(), *time);
+            continue;
+        }
+
+        // Add time to the full category path (leaf level)
+        *aggregated.entry(category.clone()).or_insert(0.0) += time;
+
+        // Split by " > " and add time to all parent categories
+        let parts: Vec<&str> = category.split(" > ").collect();
+
+        // Build each parent category path and add time
+        for i in 1..parts.len() {
+            let parent_path = parts[..i].join(" > ");
+            *aggregated.entry(parent_path).or_insert(0.0) += time;
+        }
+    }
+
+    aggregated
+}
+
 /// Get appropriate emoji icon for a category
 fn get_category_icon(category: &str) -> &'static str {
     let category_lower = category.to_lowercase();
@@ -1028,6 +1286,44 @@ fn get_top_level_categories_for_notifications(
 
     // Then get the top categories from the aggregated data
     let top_cats = get_top_categories(&aggregated, min_percent, max_count);
+
+    // Format with icons for notifications
+    top_cats
+        .into_iter()
+        .map(|(cat, time)| (format_category_for_notification(&cat), time))
+        .collect()
+}
+
+/// Get top categories aggregated by all levels (top-level and nested) with emoji formatting for notifications
+///
+/// This function combines all-level category aggregation with notification formatting.
+/// It's useful for showing comprehensive time summaries that include both parent categories
+/// and their detailed subcategories.
+///
+/// # Arguments
+///
+/// * `cat_time` - HashMap of category names to time spent (in seconds)
+/// * `min_percent` - Minimum percentage of total time to include (e.g., 0.02 = 2%)
+/// * `max_count` - Maximum number of categories to return
+///
+/// # Returns
+///
+/// Vector of tuples containing (formatted_category_name, formatted_time_string)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let cat_time = get_time(None, CategoryAggregation::AllLevels)?;
+/// let top_cats = get_all_level_categories_for_notifications(&cat_time, 0.02, 5);
+/// // Returns: [("💼 Work", "2h 15m"), ("💻 Work > Programming", "1h 30m"), ...]
+/// ```
+fn get_all_level_categories_for_notifications(
+    cat_time: &HashMap<String, f64>,
+    min_percent: f64,
+    max_count: usize,
+) -> Vec<(String, String)> {
+    // Get the top categories from the already-aggregated data
+    let top_cats = get_top_categories(cat_time, min_percent, max_count);
 
     // Format with icons for notifications
     top_cats
