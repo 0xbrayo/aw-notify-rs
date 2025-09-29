@@ -1,0 +1,99 @@
+# aw-notify-rs Configuration File
+#
+# This is an example configuration file for aw-notify-rs.
+# A default configuration file like this is automatically created at:
+# - Linux: ~/.config/aw-notify/config.toml
+# - macOS: ~/Library/Application Support/aw-notify/config.toml
+# - Windows: %APPDATA%\aw-notify\config.toml
+#
+# The configuration file is created automatically on first run.
+
+# Enable or disable hourly activity summaries
+hourly_checkins = true
+
+# Enable or disable new day greeting notifications
+new_day_greetings = true
+
+# Enable or disable ActivityWatch server monitoring alerts
+server_monitoring = true
+
+# Category alerts configuration
+# Each alert monitors a specific category and sends notifications when thresholds are reached
+[[alerts]]
+category = "All"                                    # Category to monitor (must match ActivityWatch categories)
+label = "All"                                       # Display name in notifications
+thresholds_minutes = [60, 120, 240, 360, 480]     # Thresholds: 1h, 2h, 4h, 6h, 8h
+positive = false                                    # false = "Time spent" warnings, true = "Goal reached" achievements
+
+[[alerts]]
+category = "Twitter"
+label = "🐦 Twitter"
+thresholds_minutes = [15, 30, 60]                  # 15min, 30min, 1h warnings
+positive = false
+
+[[alerts]]
+category = "Youtube"
+label = "📺 Youtube"
+thresholds_minutes = [15, 30, 60]                  # 15min, 30min, 1h warnings
+positive = false
+
+[[alerts]]
+category = "Work"
+label = "💼 Work"
+thresholds_minutes = [15, 30, 60, 120, 240]       # 15min, 30min, 1h, 2h, 4h achievements
+positive = true                                     # Show as "Goal reached!" instead of warnings
+
+# Example: Social Media Alert
+# [[alerts]]
+# category = "Social Media"
+# label = "📱 Social Media"
+# thresholds_minutes = [30, 60, 120]
+# positive = false
+
+# Example: Programming Alert (positive reinforcement)
+# [[alerts]]
+# category = "Programming"
+# label = "💻 Programming"
+# thresholds_minutes = [30, 60, 120, 180, 240]
+# positive = true
+
+# Example: Nested Category Alert - Track specific subcategories
+# Nested categories use " > " as separator (e.g., "Work > Programming > Rust")
+# [[alerts]]
+# category = "Work > Programming"
+# label = "💻 Work Programming"
+# thresholds_minutes = [60, 120, 180, 240]
+# positive = true
+
+# Example: Deep Nested Category - Track very specific activities
+# [[alerts]]
+# category = "Work > Programming > Rust"
+# label = "🦀 Rust Development"
+# thresholds_minutes = [30, 60, 90, 120]
+# positive = true
+
+# Example: Another Nested Category - Meetings
+# [[alerts]]
+# category = "Work > Meetings"
+# label = "📅 Meetings"
+# thresholds_minutes = [30, 60, 120]
+# positive = false
+
+# Example: Custom category with emoji
+# [[alerts]]
+# category = "Gaming"
+# label = "🎮 Gaming"
+# thresholds_minutes = [60, 120, 180]
+# positive = false
+
+# Notes:
+# - Categories must match exactly what ActivityWatch reports
+# - Nested categories are fully supported using " > " separator (e.g., "Work > Programming > Rust")
+# - You can set alerts for both top-level categories (e.g., "Work") and nested categories (e.g., "Work > Programming")
+# - Threshold alerts use the full category hierarchy, so nested categories will be matched exactly
+# - Hourly checkins show top-level categories only for a clean summary
+# - Use positive=true for activities you want to encourage (shows "Goal reached!")
+# - Use positive=false for activities you want to limit (shows "Time spent")
+# - Thresholds are in minutes and will trigger notifications when reached
+# - Labels support emoji and will be shown in notification titles
+# - You can have as many alerts as you want by adding more [[alerts]] sections
