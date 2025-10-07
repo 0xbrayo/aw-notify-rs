@@ -164,6 +164,7 @@ enum Commands {
 // Configuration loading functions
 fn get_default_config_path() -> PathBuf {
     let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("activitywatch");
     path.push("aw-notify");
     path.push("config.toml");
     path
