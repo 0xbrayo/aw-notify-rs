@@ -73,6 +73,18 @@ impl Default for AlertConfig {
     }
 }
 
+impl AlertConfig {
+    /// Get the display label, falling back to category name if not set
+    pub fn display_label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.category)
+    }
+
+    /// Validate that thresholds are in ascending order
+    pub fn validate_thresholds(&self) -> bool {
+        self.thresholds_minutes.windows(2).all(|w| w[0] < w[1])
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NotificationConfig {
     pub alerts: Vec<AlertConfig>,
@@ -114,6 +126,38 @@ impl Default for NotificationConfig {
             new_day_greetings: true,
             server_monitoring: true,
         }
+    }
+}
+
+impl NotificationConfig {
+    /// Validate the configuration
+    ///
+    /// Checks that all alert configurations have valid threshold orderings.
+    pub fn validate(&self) -> Result<()> {
+        for (idx, alert) in self.alerts.iter().enumerate() {
+            if alert.thresholds_minutes.is_empty() {
+                log::warn!(
+                    "Alert #{} for category '{}' has no thresholds - it will never trigger",
+                    idx,
+                    alert.category
+                );
+            }
+            if !alert.validate_thresholds() {
+                return Err(anyhow!(
+                    "Alert for category '{}' has thresholds not in ascending order",
+                    alert.category
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if any monitoring features are enabled
+    pub fn has_any_monitoring_enabled(&self) -> bool {
+        self.hourly_checkins
+            || self.new_day_greetings
+            || self.server_monitoring
+            || !self.alerts.is_empty()
     }
 }
 
@@ -207,6 +251,9 @@ fn load_config() -> Result<NotificationConfig> {
     let config: NotificationConfig = toml::from_str(&config_content)
         .map_err(|e| anyhow!("Failed to parse config file {:?}: {}", config_path, e))?;
 
+    // Validate the configuration
+    config.validate()?;
+
     log::info!("Loaded configuration from {:?}", config_path);
     Ok(config)
 }
@@ -240,11 +287,25 @@ fn main() -> Result<()> {
             let host = "127.0.0.1";
             let client = match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify") {
                 Ok(client) => client,
-                Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Failed to create ActivityWatch client ({}:{}): {}. Is the ActivityWatch server running?",
+                        host,
+                        port,
+                        e
+                    ))
+                }
             };
 
             // Wait for server to be ready (like Python's wait_for_start)
-            client.get_info()?;
+            client.get_info().map_err(|e| {
+                anyhow!(
+                    "Failed to connect to ActivityWatch server at {}:{}. Error: {}",
+                    host,
+                    port,
+                    e
+                )
+            })?;
 
             let hostname = get_hostname().map_or_else(
                 |_| "unknown".to_string(),
@@ -264,7 +325,14 @@ fn main() -> Result<()> {
             let client =
                 match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify-checkin") {
                     Ok(client) => client,
-                    Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+                    Err(e) => {
+                        return Err(anyhow!(
+                            "Failed to create ActivityWatch client ({}:{}): {}. Is the ActivityWatch server running?",
+                            host,
+                            port,
+                            e
+                        ))
+                    }
                 };
 
             let hostname = get_hostname().map_or_else(
@@ -286,7 +354,14 @@ fn main() -> Result<()> {
             let client =
                 match aw_client_rust::blocking::AwClient::new(host, port, "aw-notify-checkin") {
                     Ok(client) => client,
-                    Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
+                    Err(e) => {
+                        return Err(anyhow!(
+                            "Failed to create ActivityWatch client ({}:{}): {}. Is the ActivityWatch server running?",
+                            host,
+                            port,
+                            e
+                        ))
+                    }
                 };
 
             let hostname = get_hostname().map_or_else(
@@ -306,6 +381,11 @@ fn main() -> Result<()> {
 
 fn start_service(hostname: String, config: NotificationConfig) -> Result<()> {
     log::info!("Starting notification service...");
+
+    // Validate configuration first
+    if !config.has_any_monitoring_enabled() {
+        log::warn!("All monitoring features are disabled in configuration. Service will idle.");
+    }
 
     // Create shutdown channels for each thread
     let (shutdown_tx_main, shutdown_rx_main) = bounded::<()>(1);
