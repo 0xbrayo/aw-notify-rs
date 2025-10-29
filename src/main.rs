@@ -246,9 +246,10 @@ fn main() -> Result<()> {
             // Wait for server to be ready (like Python's wait_for_start)
             client.get_info()?;
 
-            let hostname = get_hostname()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let hostname = get_hostname().map_or_else(
+                |_| "unknown".to_string(),
+                |h| h.to_string_lossy().to_string(),
+            );
 
             // Set global state
             AW_CLIENT.set(client).ok();
@@ -266,9 +267,10 @@ fn main() -> Result<()> {
                     Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
                 };
 
-            let hostname = get_hostname()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let hostname = get_hostname().map_or_else(
+                |_| "unknown".to_string(),
+                |h| h.to_string_lossy().to_string(),
+            );
 
             // Set global state
             AW_CLIENT.set(client).ok();
@@ -287,9 +289,10 @@ fn main() -> Result<()> {
                     Err(e) => return Err(anyhow!("Failed to create client: {}", e)),
                 };
 
-            let hostname = get_hostname()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "unknown".to_string());
+            let hostname = get_hostname().map_or_else(
+                |_| "unknown".to_string(),
+                |h| h.to_string_lossy().to_string(),
+            );
 
             // Set global state
             AW_CLIENT.set(client).ok();
@@ -575,7 +578,6 @@ fn threshold_alerts(shutdown_rx: Receiver<()>, alert_configs: Vec<AlertConfig>) 
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                 // Normal timeout, continue monitoring
-                continue;
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                 log::warn!("Shutdown channel disconnected, stopping threshold alerts monitoring");
@@ -943,7 +945,6 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     // Normal timeout, continue checking
-                    continue;
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     log::warn!(
@@ -1007,7 +1008,6 @@ fn start_server_monitor(shutdown_rx: Receiver<()>) {
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     // Normal timeout, continue monitoring
-                    continue;
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     log::warn!("Shutdown channel disconnected, stopping server monitor thread");
