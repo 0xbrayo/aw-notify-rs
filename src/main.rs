@@ -80,7 +80,15 @@ impl AlertConfig {
     }
 
     /// Validate that thresholds are in ascending order
+    ///
+    /// Returns `true` if thresholds are properly ordered or if there are 0-1 thresholds.
+    /// For 0 or 1 threshold, there's nothing to validate ordering-wise.
     pub fn validate_thresholds(&self) -> bool {
+        // Empty or single threshold is valid (nothing to order)
+        if self.thresholds_minutes.len() <= 1 {
+            return true;
+        }
+        // Check that each threshold is strictly less than the next
         self.thresholds_minutes.windows(2).all(|w| w[0] < w[1])
     }
 }
@@ -138,7 +146,7 @@ impl NotificationConfig {
             if alert.thresholds_minutes.is_empty() {
                 log::warn!(
                     "Alert #{} for category '{}' has no thresholds - it will never trigger",
-                    idx,
+                    idx + 1, // Use 1-based numbering for user-friendly output
                     alert.category
                 );
             }
@@ -153,11 +161,17 @@ impl NotificationConfig {
     }
 
     /// Check if any monitoring features are enabled
+    ///
+    /// Returns `true` if any feature is enabled (hourly checkins, new day greetings,
+    /// server monitoring, or at least one alert with valid thresholds).
     pub fn has_any_monitoring_enabled(&self) -> bool {
         self.hourly_checkins
             || self.new_day_greetings
             || self.server_monitoring
-            || !self.alerts.is_empty()
+            || self
+                .alerts
+                .iter()
+                .any(|alert| !alert.thresholds_minutes.is_empty())
     }
 }
 
