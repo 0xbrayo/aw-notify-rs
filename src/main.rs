@@ -15,7 +15,7 @@ use hostname::get as get_hostname;
 use notify_rust::Notification;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering as cmpOrdering;
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -35,6 +35,11 @@ static TIME_CACHE: Lazy<DashMap<String, CacheValue>> = Lazy::new(DashMap::new);
 // Constants (matching Python exactly)
 const TIME_OFFSET: Duration = Duration::hours(4);
 const CACHE_TTL_SECONDS: i64 = 60;
+const THRESHOLD_CHECK_INTERVAL_SECS: u64 = 10;
+const SERVER_CHECK_INTERVAL_SECS: u64 = 10;
+const NEW_DAY_CHECK_INTERVAL_SECS: u64 = 5 * 60; // 5 minutes
+const AFK_TIMEOUT_MINUTES: i64 = 5;
+const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 
 /// Category aggregation mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,7 +377,9 @@ fn start_service(hostname: String, config: NotificationConfig) -> Result<()> {
     result
 }
 
-// CategoryAlert struct (exact copy of Python's CategoryAlert logic)
+/// CategoryAlert tracks time spent in a category and sends notifications when thresholds are reached
+///
+/// This struct mirrors the Python version's CategoryAlert class logic exactly.
 struct CategoryAlert {
     category: String,
     label: String,
@@ -385,6 +392,14 @@ struct CategoryAlert {
 }
 
 impl CategoryAlert {
+    /// Create a new CategoryAlert with specified thresholds
+    ///
+    /// # Arguments
+    ///
+    /// * `category` - Category name to monitor
+    /// * `thresholds` - List of time thresholds for notifications
+    /// * `label` - Optional display label (defaults to category name)
+    /// * `positive` - If true, shows "Goal reached!", otherwise shows "Time spent"
     fn new(category: &str, thresholds: Vec<Duration>, label: Option<&str>, positive: bool) -> Self {
         Self {
             category: category.to_string(),
@@ -398,6 +413,7 @@ impl CategoryAlert {
         }
     }
 
+    /// Get list of thresholds that haven't been triggered yet
     fn thresholds_untriggered(&self) -> Vec<Duration> {
         self.thresholds
             .iter()
@@ -406,6 +422,7 @@ impl CategoryAlert {
             .collect()
     }
 
+    /// Calculate time remaining until the next threshold
     fn time_to_next_threshold(&self) -> Duration {
         let untriggered = self.thresholds_untriggered();
         if untriggered.is_empty() {
@@ -430,6 +447,7 @@ impl CategoryAlert {
         (min_threshold - self.time_spent).max(Duration::zero())
     }
 
+    /// Update time spent in this category from ActivityWatch
     fn update(&mut self) {
         let now = Local::now();
         let time_to_threshold = self.time_to_next_threshold();
@@ -450,6 +468,11 @@ impl CategoryAlert {
         }
     }
 
+    /// Check if any thresholds have been reached and send notifications
+    ///
+    /// # Arguments
+    ///
+    /// * `silent` - If true, suppresses notifications (useful for initial check)
     fn check(&mut self, silent: bool) {
         // Sort thresholds in descending order (like Python)
         let mut untriggered = self.thresholds_untriggered();
@@ -484,11 +507,16 @@ impl CategoryAlert {
         }
     }
 
+    /// Get current status string showing time spent
     fn status(&self) -> String {
         format!("{}: {}", self.label, to_hms(self.time_spent))
     }
 }
 
+/// Main threshold monitoring loop
+///
+/// Continuously monitors category time thresholds and sends notifications when reached.
+/// Runs until shutdown signal is received.
 fn threshold_alerts(shutdown_rx: Receiver<()>, alert_configs: Vec<AlertConfig>) -> Result<()> {
     log::info!("Starting threshold alerts monitoring...");
 
@@ -540,7 +568,7 @@ fn threshold_alerts(shutdown_rx: Receiver<()>, alert_configs: Vec<AlertConfig>) 
         }
 
         // Wait for shutdown signal or timeout (10 seconds for normal monitoring)
-        match shutdown_rx.recv_timeout(time::Duration::from_secs(10)) {
+        match shutdown_rx.recv_timeout(time::Duration::from_secs(THRESHOLD_CHECK_INTERVAL_SECS)) {
             Ok(_) => {
                 log::info!("Shutdown signal received, stopping threshold alerts monitoring");
                 break;
@@ -560,7 +588,14 @@ fn threshold_alerts(shutdown_rx: Receiver<()>, alert_configs: Vec<AlertConfig>) 
     Ok(())
 }
 
-// Cache implementation (matching Python's @cache_ttl decorator)
+/// Get time spent per category with caching
+///
+/// Implements a TTL cache (60 seconds) to reduce server requests, matching Python's @cache_ttl.
+///
+/// # Arguments
+///
+/// * `date` - Optional date to query (defaults to today)
+/// * `aggregation_mode` - How to aggregate hierarchical categories
 fn get_time(
     date: Option<DateTime<Utc>>,
     aggregation_mode: CategoryAggregation,
@@ -587,6 +622,9 @@ fn get_time(
     Ok(result)
 }
 
+/// Query ActivityWatch server for time data
+///
+/// Builds and executes a canonical events query matching the Python implementation.
 fn query_activitywatch(
     date: Option<DateTime<Utc>>,
     aggregation_mode: CategoryAggregation,
@@ -732,6 +770,7 @@ RETURN = {{"events": events, "duration": duration, "cat_events": cat_events}};"#
     }
 }
 
+/// Send a checkin notification with top-level categories
 fn send_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
     log::info!("Sending checkin: {}", title);
 
@@ -755,6 +794,7 @@ fn send_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
     Ok(())
 }
 
+/// Send a detailed checkin notification with all category levels
 fn send_detailed_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()> {
     log::info!("Sending detailed checkin: {}", title);
 
@@ -778,11 +818,15 @@ fn send_detailed_checkin(title: &str, date: Option<DateTime<Utc>>) -> Result<()>
     Ok(())
 }
 
+/// Send a checkin notification for yesterday's activity
 fn send_checkin_yesterday() -> Result<()> {
     let yesterday = Local::now().with_timezone(&Utc) - Duration::days(1);
     send_checkin("Time yesterday", Some(yesterday))
 }
 
+/// Start hourly checkin background thread
+///
+/// Sends activity summaries at the top of each hour when the user is active.
 fn start_hourly(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting hourly checkin thread");
@@ -839,6 +883,9 @@ fn start_hourly(hostname: String, shutdown_rx: Receiver<()>) {
     });
 }
 
+/// Start new day greeting background thread
+///
+/// Sends a greeting notification when a new day starts and the user becomes active.
 fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting new day notification thread");
@@ -914,10 +961,16 @@ fn start_new_day(hostname: String, shutdown_rx: Receiver<()>) {
 /// Calculate polling interval for new day detection
 /// - Always poll every 5 minutes for consistent checking
 fn calculate_new_day_polling_interval(_now: DateTime<Local>) -> time::Duration {
-    log::debug!("Using 5-minute polling for new day detection");
-    time::Duration::from_secs(5 * 60) // 5 minutes
+    log::debug!(
+        "Using {}-minute polling for new day detection",
+        NEW_DAY_CHECK_INTERVAL_SECS / 60
+    );
+    time::Duration::from_secs(NEW_DAY_CHECK_INTERVAL_SECS)
 }
 
+/// Start server monitoring background thread
+///
+/// Monitors ActivityWatch server availability and sends alerts on status changes.
 fn start_server_monitor(shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting server monitor thread");
@@ -947,7 +1000,7 @@ fn start_server_monitor(shutdown_rx: Receiver<()>) {
             }
 
             // Wait for shutdown signal or timeout (10 seconds for monitoring)
-            match shutdown_rx.recv_timeout(time::Duration::from_secs(10)) {
+            match shutdown_rx.recv_timeout(time::Duration::from_secs(SERVER_CHECK_INTERVAL_SECS)) {
                 Ok(_) => {
                     log::info!("Shutdown signal received, stopping server monitor thread");
                     break;
@@ -967,6 +1020,13 @@ fn start_server_monitor(shutdown_rx: Receiver<()>) {
     });
 }
 
+/// Check if the user is currently active (not AFK)
+///
+/// # Returns
+///
+/// * `Ok(Some(true))` - User is active
+/// * `Ok(Some(false))` - User is AFK
+/// * `Ok(None)` - Cannot determine status (e.g., event too old)
 fn get_active_status(hostname: &str) -> Result<Option<bool>> {
     let client = AW_CLIENT
         .get()
@@ -983,7 +1043,7 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
     let event_end = event.timestamp + event.duration;
 
     // Check if event is too old (like Python - 5 minutes)
-    if event_end < Local::now().with_timezone(&Utc) - Duration::minutes(5) {
+    if event_end < Local::now().with_timezone(&Utc) - Duration::minutes(AFK_TIMEOUT_MINUTES) {
         log::warn!("AFK event is too old, can't use to reliably determine AFK state");
         return Ok(None);
     }
@@ -997,6 +1057,7 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
     Ok(None)
 }
 
+/// Check if ActivityWatch server is available
 fn check_server_availability() -> bool {
     if let Some(client) = AW_CLIENT.get() {
         match client.get_info() {
@@ -1008,6 +1069,11 @@ fn check_server_availability() -> bool {
     }
 }
 
+/// Send a desktop notification
+///
+/// On macOS, tries terminal-notifier first, then falls back to notify-rust.
+/// On other platforms, uses notify-rust directly.
+/// In output-only mode, prints to stdout instead.
 fn notify(title: &str, message: &str) -> Result<()> {
     let output_only = OUTPUT_ONLY.load(Ordering::Relaxed);
 
@@ -1035,12 +1101,13 @@ fn notify(title: &str, message: &str) -> Result<()> {
         .summary(title)
         .body(message)
         .appname("ActivityWatch")
-        .timeout(5000)
+        .timeout(NOTIFICATION_TIMEOUT_MS)
         .show()?;
 
     Ok(())
 }
 
+/// Try sending notification via terminal-notifier on macOS
 #[cfg(target_os = "macos")]
 fn try_terminal_notifier(title: &str, message: &str) -> Result<bool> {
     use std::process::Command;
@@ -1068,11 +1135,14 @@ fn try_terminal_notifier(title: &str, message: &str) -> Result<bool> {
     }
 }
 
+/// Stub for terminal-notifier on non-macOS platforms
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 fn try_terminal_notifier(_title: &str, _message: &str) -> Result<bool> {
     Ok(false)
 }
 
+/// Format duration as human-readable string (e.g., "2h 30m")
 fn to_hms(duration: Duration) -> String {
     let days = duration.num_days();
     let hours = duration.num_hours() % 24;
@@ -1097,6 +1167,10 @@ fn to_hms(duration: Duration) -> String {
     parts.join(" ")
 }
 
+/// Decode Unicode escape sequences in strings
+///
+/// Simple implementation that currently just returns the string as-is.
+/// Could be enhanced to handle actual Unicode escape sequences if needed.
 fn decode_unicode_escapes(s: &str) -> String {
     // Simple implementation for now - matches Python's decode_unicode_escapes
     // Could be enhanced to handle actual Unicode escape sequences
@@ -1104,10 +1178,16 @@ fn decode_unicode_escapes(s: &str) -> String {
 }
 
 // === CATEGORY MATCHING AND PROCESSING FUNCTIONS ===
-//Get categorization classes from server with fallback to defaults
+/// Get categorization classes from server with fallback to defaults
 fn get_server_classes() -> Vec<(CategoryId, CategorySpec)> {
     // Try to get classes from server (like old version)
-    let client = AW_CLIENT.get().unwrap();
+    let client = match AW_CLIENT.get() {
+        Some(client) => client,
+        None => {
+            log::warn!("Client not initialized, using default classes");
+            return default_classes();
+        }
+    };
 
     client
         .get_setting("classes")
@@ -1248,6 +1328,14 @@ fn format_category_for_notification(category: &str) -> String {
 }
 
 /// Get top categories sorted by time spent with clean formatting
+///
+/// Filters and sorts categories, returning only those above a minimum percentage threshold.
+///
+/// # Arguments
+///
+/// * `cat_time` - HashMap of category names to time spent in seconds
+/// * `min_percent` - Minimum percentage of total time to include (e.g., 0.02 = 2%)
+/// * `max_count` - Maximum number of categories to return
 fn get_top_categories(
     cat_time: &HashMap<String, f64>,
     min_percent: f64,
@@ -1266,7 +1354,7 @@ fn get_top_categories(
         .collect();
 
     // Sort by time spent (descending)
-    categories.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(cmpOrdering::Equal));
+    categories.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(CmpOrdering::Equal));
 
     // Limit to max_count and format durations
     categories
@@ -1277,6 +1365,9 @@ fn get_top_categories(
 }
 
 /// Get top categories aggregated by top-level with emoji formatting for notifications
+///
+/// First aggregates hierarchical categories to their top-level (e.g., "Work > Programming" → "Work"),
+/// then filters, sorts, and formats them with appropriate emoji icons.
 fn get_top_level_categories_for_notifications(
     cat_time: &HashMap<String, f64>,
     min_percent: f64,
