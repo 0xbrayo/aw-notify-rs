@@ -331,15 +331,15 @@ fn start_service(hostname: String, config: NotificationConfig) -> Result<()> {
     log::debug!("Signal handler installed successfully");
 
     // Send initial notifications (matching Python's start function)
-    if let Err(e) = send_checkin("Time today", None) {
-        log::warn!("Failed to send initial checkin: {} (continuing anyway)", e);
-    }
-
     if let Err(e) = send_checkin_yesterday() {
         log::warn!(
             "Failed to send yesterday checkin: {} (continuing anyway)",
             e
         );
+    }
+
+    if let Err(e) = send_checkin("Time today", None) {
+        log::warn!("Failed to send initial checkin: {} (continuing anyway)", e);
     }
 
     // Start background threads based on configuration
