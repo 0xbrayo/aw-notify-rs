@@ -243,11 +243,11 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "aw-client-rust"
 version = "0.1.0"
-source = "git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern#9c72e68b486cd3d023528ca9a1d9f149138e982e"
+source = "git+https://github.com/ActivityWatch/aw-server-rust?branch=master#10c50ba470334e963c4e59ce8bc68999298018e1"
 dependencies = [
- "aw-models 0.1.0 (git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern)",
+ "aw-models",
  "chrono",
- "dirs 4.0.0",
+ "dirs 6.0.0",
  "fs4",
  "gethostname",
  "libc",
@@ -264,19 +264,7 @@ dependencies = [
 [[package]]
 name = "aw-models"
 version = "0.1.0"
-source = "git+https://github.com/0xbrayo/aw-server-rust?branch=always-active-pattern#9c72e68b486cd3d023528ca9a1d9f149138e982e"
-dependencies = [
- "chrono",
- "log",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aw-models"
-version = "0.1.0"
-source = "git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master#f4bb94dfd5732ec61d164400e3b9e706b2b4dc78"
+source = "git+https://github.com/ActivityWatch/aw-server-rust?branch=master#f4bb94dfd5732ec61d164400e3b9e706b2b4dc78"
 dependencies = [
  "chrono",
  "log",
@@ -291,7 +279,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "aw-client-rust",
- "aw-models 0.1.0 (git+https://github.com/ActivityWatch/aw-server-rust.git?branch=master)",
+ "aw-models",
  "chrono",
  "clap",
  "crossbeam-channel",
@@ -532,15 +520,6 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca3aa72a6f96ea37bbc5aa912f6788242832f75369bdfdadcb0e38423f100059"
-dependencies = [
- "dirs-sys 0.3.7",
-]
-
-[[package]]
-name = "dirs"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
@@ -549,14 +528,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "dirs-sys"
-version = "0.3.7"
+name = "dirs"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b1d1d91c932ef41c0f2663aa8b0ca0342d444d842c06914aa0a7e352d0bada6"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
 dependencies = [
- "libc",
- "redox_users",
- "winapi",
+ "dirs-sys 0.5.0",
 ]
 
 [[package]]
@@ -567,8 +544,20 @@ checksum = "520f05a5cbd335fae5a99ff7a6ab8627577660ee5cfd6a94a6a929b52ff0321c"
 dependencies = [
  "libc",
  "option-ext",
- "redox_users",
+ "redox_users 0.4.6",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users 0.5.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1678,6 +1667,17 @@ dependencies = [
  "getrandom 0.2.16",
  "libredox",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "redox_users"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
+dependencies = [
+ "getrandom 0.2.16",
+ "libredox",
+ "thiserror 2.0.12",
 ]
 
 [[package]]

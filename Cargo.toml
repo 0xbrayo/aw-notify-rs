@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # ActivityWatch client
-aw-client-rust = {git = "https://github.com/0xbrayo/aw-server-rust", branch="always-active-pattern"}
+aw-client-rust = {git = "https://github.com/ActivityWatch/aw-server-rust", branch="master"}
 aw-models = { git = "https://github.com/ActivityWatch/aw-server-rust.git", branch = "master" }
 
 # Command line interface
