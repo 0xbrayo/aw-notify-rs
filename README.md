@@ -31,7 +31,7 @@ This is a streamlined rewrite that consolidates functionality into a single file
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github/0xbrayo/aw-notify-rs.git
 cd aw-notify-rs
 
 # Build the application
