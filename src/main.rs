@@ -1012,11 +1012,14 @@ fn notify(title: &str, message: &str) -> Result<()> {
     let output_only = OUTPUT_ONLY.load(Ordering::Relaxed);
 
     if output_only {
-        // Output only mode - print to stdout with separators
-        println!("{}", "-".repeat(50));
-        println!("{}:", title);
-        println!("{}", message);
-        println!("{}", "-".repeat(50));
+        // Output only mode - print as JSON Lines format
+        let notification = serde_json::json!({
+            "timestamp": Utc::now().to_rfc3339(),
+            "title": title,
+            "message": message,
+            "app": "ActivityWatch",
+        });
+        println!("{}", serde_json::to_string(&notification)?);
         return Ok(());
     }
 
