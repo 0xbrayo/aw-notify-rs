@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering as cmpOrdering;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -331,16 +332,9 @@ fn start_service(hostname: String, config: NotificationConfig) -> Result<()> {
 
     log::debug!("Signal handler installed successfully");
 
-    // Send initial notifications (matching Python's start function)
-    if let Err(e) = send_checkin_yesterday() {
-        log::warn!(
-            "Failed to send yesterday checkin: {} (continuing anyway)",
-            e
-        );
-    }
-
-    if let Err(e) = send_checkin("Time today", None) {
-        log::warn!("Failed to send initial checkin: {} (continuing anyway)", e);
+    // Send initial notifications (batched for output-only mode)
+    if let Err(e) = send_initial_checkins() {
+        log::warn!("Failed to send initial checkins: {} (continuing anyway)", e);
     }
 
     // Start background threads based on configuration
@@ -783,6 +777,80 @@ fn send_checkin_yesterday() -> Result<()> {
     send_checkin("Time yesterday", Some(yesterday))
 }
 
+fn send_initial_checkins() -> Result<()> {
+    log::info!("Sending initial checkins (batched)");
+
+    let output_only = OUTPUT_ONLY.load(Ordering::Relaxed);
+
+    if output_only {
+        // Batch both notifications into a single buffer
+        let mut output = String::new();
+
+        // Get yesterday's data
+        let yesterday = Local::now().with_timezone(&Utc) - Duration::days(1);
+        let cat_time_yesterday = get_time(Some(yesterday), CategoryAggregation::TopLevelOnly)?;
+        let top_categories_yesterday =
+            get_top_level_categories_for_notifications(&cat_time_yesterday, 0.02, 4);
+
+        if !top_categories_yesterday.is_empty() {
+            let message_yesterday = top_categories_yesterday
+                .iter()
+                .map(|(cat, time)| format!("- {}: {}", decode_unicode_escapes(cat), time))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let notification_yesterday = serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+                "title": "Time yesterday",
+                "message": message_yesterday,
+                "app": "ActivityWatch",
+            });
+            output.push_str(&serde_json::to_string(&notification_yesterday)?);
+            output.push_str("\n\n\n\n");
+        }
+
+        // Get today's data
+        let cat_time_today = get_time(None, CategoryAggregation::TopLevelOnly)?;
+        let top_categories_today =
+            get_top_level_categories_for_notifications(&cat_time_today, 0.02, 4);
+
+        if !top_categories_today.is_empty() {
+            let message_today = top_categories_today
+                .iter()
+                .map(|(cat, time)| format!("- {}: {}", decode_unicode_escapes(cat), time))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let notification_today = serde_json::json!({
+                "timestamp": Utc::now().to_rfc3339(),
+                "title": "Time today",
+                "message": message_today,
+                "app": "ActivityWatch",
+            });
+            output.push_str(&serde_json::to_string(&notification_today)?);
+            output.push_str("\n\n\n\n");
+        }
+
+        // Write both notifications at once
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(output.as_bytes())?;
+        stdout.flush()?;
+    } else {
+        // For non-output mode, send separately (UI notifications)
+        if let Err(e) = send_checkin_yesterday() {
+            log::warn!(
+                "Failed to send yesterday checkin: {} (continuing anyway)",
+                e
+            );
+        }
+        if let Err(e) = send_checkin("Time today", None) {
+            log::warn!("Failed to send initial checkin: {} (continuing anyway)", e);
+        }
+    }
+
+    Ok(())
+}
+
 fn start_hourly(hostname: String, shutdown_rx: Receiver<()>) {
     thread::spawn(move || {
         log::info!("Starting hourly checkin thread");
@@ -1019,7 +1087,14 @@ fn notify(title: &str, message: &str) -> Result<()> {
             "message": message,
             "app": "ActivityWatch",
         });
-        println!("{}", serde_json::to_string(&notification)?);
+
+        // Combine into one buffer and write once
+        let mut output = serde_json::to_string(&notification)?;
+        output.push_str("\n\n\n\n");
+
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(output.as_bytes())?; // Atomic write
+        stdout.flush()?;
         return Ok(());
     }
 
