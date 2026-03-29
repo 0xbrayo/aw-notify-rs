@@ -806,7 +806,6 @@ fn send_initial_checkins() -> Result<()> {
                 "app": "ActivityWatch",
             });
             output.push_str(&serde_json::to_string(&notification_yesterday)?);
-            output.push_str("\n\n\n\n");
         }
 
         // Get today's data
@@ -828,7 +827,6 @@ fn send_initial_checkins() -> Result<()> {
                 "app": "ActivityWatch",
             });
             output.push_str(&serde_json::to_string(&notification_today)?);
-            output.push_str("\n\n\n\n");
         }
 
         // Write both notifications at once
@@ -1089,8 +1087,7 @@ fn notify(title: &str, message: &str) -> Result<()> {
         });
 
         // Combine into one buffer and write once
-        let mut output = serde_json::to_string(&notification)?;
-        output.push_str("\n\n\n\n");
+        let output = serde_json::to_string(&notification)?;
 
         let mut stdout = io::stdout().lock();
         stdout.write_all(output.as_bytes())?; // Atomic write
