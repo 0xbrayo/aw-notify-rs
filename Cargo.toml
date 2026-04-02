@@ -30,7 +30,7 @@ anyhow = "1.0"
 
 # Logging
 log = "0.4"
-env_logger = "0.10"
+fern = "0.6"
 
 # Desktop notifications
 notify-rust = "4.10"

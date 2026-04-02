@@ -207,18 +207,157 @@ fn load_config() -> Result<NotificationConfig> {
     Ok(config)
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+// Log rotation constants
+const MAX_LOG_SIZE: u64 = 32 * 1024 * 1024; // 32MB
+const MAX_ROTATED_LOGS: usize = 5; // Keep last 5 rotated logs
 
-    let log_level = if cli.verbose { "debug" } else { "info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+/// Rotate log file if it exceeds MAX_LOG_SIZE
+fn rotate_log_if_needed(log_path: &PathBuf) -> Result<()> {
+    // Check if log file exists and get its size
+    if !log_path.exists() {
+        return Ok(());
+    }
 
-    // Suppress urllib3 equivalent (reqwest) warnings like Python
-    log::set_max_level(if cli.verbose {
+    let metadata = fs::metadata(log_path)?;
+    let file_size = metadata.len();
+
+    // Only rotate if file exceeds MAX_LOG_SIZE
+    if file_size <= MAX_LOG_SIZE {
+        return Ok(());
+    }
+
+    // Create rotated filename with timestamp
+    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+    let log_dir = log_path
+        .parent()
+        .ok_or_else(|| anyhow!("Failed to get log dir"))?;
+    let log_name = log_path
+        .file_stem()
+        .ok_or_else(|| anyhow!("Failed to get log filename"))?;
+    let rotated_name = format!("{}.{}.log", log_name.to_string_lossy(), timestamp);
+    let rotated_path = log_dir.join(rotated_name);
+
+    // Rename current log file
+    fs::rename(log_path, &rotated_path)?;
+
+    // Clean up old rotated logs, keeping only MAX_ROTATED_LOGS most recent
+    cleanup_old_logs(log_dir, &log_name.to_string_lossy())?;
+
+    Ok(())
+}
+
+/// Remove old rotated logs, keeping only the most recent MAX_ROTATED_LOGS
+fn cleanup_old_logs(log_dir: &std::path::Path, log_name: &str) -> Result<()> {
+    let mut rotated_logs: Vec<_> = fs::read_dir(log_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.starts_with(&format!("{}.", log_name))
+                && name.ends_with(".log")
+                && name != format!("{}.log", log_name)
+        })
+        .collect();
+
+    // Sort by modification time (newest first)
+    rotated_logs.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    rotated_logs.reverse();
+
+    // Remove logs beyond MAX_ROTATED_LOGS
+    for log_to_remove in rotated_logs.iter().skip(MAX_ROTATED_LOGS) {
+        fs::remove_file(log_to_remove.path())?;
+    }
+
+    Ok(())
+}
+
+/// Get the log directory path following ActivityWatch conventions
+fn get_log_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut dir = dirs::cache_dir().ok_or_else(|| anyhow!("Failed to get cache dir"))?;
+        dir.push("activitywatch");
+        dir.push("aw-notify");
+        dir.push("log");
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut dir =
+            dirs::data_local_dir().ok_or_else(|| anyhow!("Failed to get local data dir"))?;
+        dir.push("activitywatch");
+        dir.push("Logs");
+        dir.push("aw-notify");
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        // macOS and other Unix-like systems
+        let mut dir = dirs::home_dir().ok_or_else(|| anyhow!("Failed to get home dir"))?;
+        dir.push("Library");
+        dir.push("Logs");
+        dir.push("activitywatch");
+        dir.push("aw-notify");
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+}
+
+/// Initialize logging to both console and file
+fn setup_logging(verbose: bool) -> Result<()> {
+    let log_level = if verbose {
         log::LevelFilter::Debug
     } else {
         log::LevelFilter::Info
-    });
+    };
+
+    // Get log file path
+    let mut log_path = get_log_dir()?;
+    log_path.push("aw-notify.log");
+
+    // Rotate log file if needed before opening
+    rotate_log_if_needed(&log_path)?;
+
+    // Create log file
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+
+    // Configure fern to log to both console and file
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "[{} {} {}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.target(),
+                message
+            ))
+        })
+        .level(log_level)
+        .chain(std::io::stderr())
+        .chain(log_file)
+        .apply()
+        .map_err(|e| anyhow!("Failed to initialize logger: {}", e))?;
+
+    log::info!("Logging initialized (log file: {:?})", log_path);
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Initialize logging
+    setup_logging(cli.verbose)?;
 
     log::info!("Starting...");
 
@@ -1040,29 +1179,72 @@ fn get_active_status(hostname: &str) -> Result<Option<bool>> {
         .get()
         .ok_or_else(|| anyhow!("Client not initialized"))?;
 
-    let bucket_name = format!("aw-watcher-afk_{}", hostname);
-    let events = client.get_events(&bucket_name, None, None, Some(1))?;
+    // Use query system that respects always-active-pattern
+    let bid_window = format!("aw-watcher-window_{}", hostname);
+    let bid_afk = format!("aw-watcher-afk_{}", hostname);
 
-    if events.is_empty() {
-        return Ok(None);
-    }
-
-    let event = &events[0];
-    let event_end = event.timestamp + event.duration;
-
-    // Check if event is too old (like Python - 5 minutes)
-    if event_end < Local::now().with_timezone(&Utc) - Duration::minutes(5) {
-        log::warn!("AFK event is too old, can't use to reliably determine AFK state");
-        return Ok(None);
-    }
-
-    if let Some(status) = event.data.get("status") {
-        if let Some(status_str) = status.as_str() {
-            return Ok(Some(status_str == "not-afk"));
+    // Get the always_active_pattern setting
+    let always_active_pattern = match client.get_setting("always_active_pattern") {
+        Ok(v) => v.as_str().map(|s| s.to_string()),
+        Err(e) => {
+            log::debug!("Failed to fetch always_active_pattern: {}", e);
+            None
         }
-    }
+    };
 
-    Ok(None)
+    let base_params = QueryParamsBase {
+        bid_browsers: vec![],
+        classes: get_server_classes(),
+        filter_classes: vec![],
+        filter_afk: true,
+        include_audible: true,
+    };
+
+    let desktop_params = DesktopQueryParams {
+        base: base_params,
+        bid_window,
+        bid_afk,
+        always_active_pattern,
+    };
+    let query_params = QueryParams::Desktop(desktop_params);
+
+    // Generate canonical events query
+    let canonical_events = query_params.canonical_events();
+
+    // Query the last 3 minutes to check for recent activity
+    let now = Local::now().with_timezone(&Utc);
+    let start = now - Duration::minutes(3);
+
+    let query = format!(
+        r#"{}
+duration = sum_durations(events);
+RETURN = {{"duration": duration}};"#,
+        canonical_events
+    );
+
+    let timeperiods = vec![(start, now)];
+    let result = client.query(&query, timeperiods)?;
+
+    // Get the duration from the query result
+    let result = result
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No query results"))?;
+
+    if let Some(duration) = result.get("duration").and_then(|d| d.as_f64()) {
+        // Consider active if there's been more than 10 seconds of activity in the last 3 minutes
+        // This accounts for the pattern potentially marking windows as always-active
+        let is_active = duration > 10.0;
+        log::debug!(
+            "Activity check: {:.1}s in last 3 minutes (active: {})",
+            duration,
+            is_active
+        );
+        Ok(Some(is_active))
+    } else {
+        log::warn!("No duration in query result, can't determine activity status");
+        Ok(None)
+    }
 }
 
 fn check_server_availability() -> bool {
