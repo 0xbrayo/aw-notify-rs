@@ -4,7 +4,7 @@ A simplified Rust implementation of [aw-notify](https://github.com/ActivityWatch
 
 ## Overview
 
-This is a streamlined rewrite that consolidates functionality into a single file (~750 lines) similar to the Python version, while maintaining:
+This is a Rust rewrite of the Python version, organized across multiple modules, while maintaining:
 
 - ✅ **Identical behavior** to the Python implementation
 - ✅ **Type safety** and memory safety of Rust
@@ -170,8 +170,10 @@ Personal > Reading: 10m
 
 This implementation uses a simplified architecture that mirrors the Python version:
 
-### Single File Design
-- **One main.rs file** (~750 lines) containing all functionality
+### Module Structure
+- **`main.rs`** — core logic, notification handling, daemon threads, and CLI
+- **`dirs.rs`** — platform-aware configuration directory resolution
+- **`logging.rs`** — logging setup and configuration
 - **Global state** using `once_cell::Lazy` (matches Python's globals)
 - **Simple daemon threads** for background tasks (matches Python's threading)
 
